@@ -1,0 +1,202 @@
+{
+  "rdapConformance": [
+    "rdap_level_0",
+    "icann_rdap_response_profile_0",
+    "icann_rdap_technical_implementation_guide_0"
+  ],
+  "publicIds": [
+    {
+      "type": "IANA Registrar ID",
+      "identifier": "1861"
+    }
+  ],
+  "notices": [
+    {
+      "title": "RDDS Inaccuracy Complaint Form",
+      "description": [
+        "URL of the ICANN RDDS Inaccuracy Complaint Form: https://icann.org/wicf"
+      ],
+      "links": [
+        {
+          "rel": "related",
+          "href": "https://icann.org/wicf",
+          "type": "text/html"
+        }
+      ]
+    },
+    {
+      "title": "Status Codes",
+      "description": [
+        "For more information on domain status codes, please visit https://icann.org/epp"
+      ],
+      "links": [
+        {
+          "rel": "related",
+          "href": "https://icann.org/epp",
+          "type": "text/html"
+        }
+      ]
+    },
+    {
+      "title": "Terms of Service",
+      "description": [
+        "URL of the Porkbun LLC terms of service: https://porkbun.com/legal/agreement/product_terms_of_service"
+      ],
+      "links": [
+        {
+          "rel": "related",
+          "href": "https://porkbun.com/legal/agreement/product_terms_of_service",
+          "type": "text/html"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "value": "https://cart-before.porkbun.horse/rdap/domain/madeinnewburgh.com",
+      "rel": "self",
+      "href": "https://cart-before.porkbun.horse/rdap/domain/madeinnewburgh.com",
+      "type": "application/rdap+json"
+    }
+  ],
+  "objectClassName": "domain",
+  "secureDNS": {
+    "delegationSigned": false
+  },
+  "handle": "1736601939_DOMAIN_COM-VRSN",
+  "ldhName": "madeinnewburgh.com",
+  "nameservers": [
+    {
+      "objectClassName": "nameserver",
+      "ldhName": "AMANDA.NS.CLOUDFLARE.COM"
+    },
+    {
+      "objectClassName": "nameserver",
+      "ldhName": "DEVIN.NS.CLOUDFLARE.COM"
+    }
+  ],
+  "events": [
+    {
+      "eventAction": "last update of RDAP database",
+      "eventDate": "2025-01-16T17:23:05+00:00"
+    },
+    {
+      "eventAction": "registration",
+      "eventDate": "2012-07-31T15:43:47+00:00"
+    },
+    {
+      "eventAction": "expiration",
+      "eventDate": "2027-07-31T15:43:47+00:00"
+    },
+    {
+      "eventAction": "registrar expiration",
+      "eventDate": "2027-07-31T15:43:47+00:00"
+    },
+    {
+      "eventAction": "last changed",
+      "eventDate": "2026-07-30T03:17:05+00:00"
+    }
+  ],
+  "entities": [
+    {
+      "objectClassName": "entity",
+      "handle": "INTERNAL-49903589",
+      "roles": [
+        "registrant"
+      ],
+      "events": [
+        {
+          "eventAction": "last changed",
+          "eventDate": "2026-07-17T21:52:52+00:00"
+        }
+      ]
+    },
+    {
+      "objectClassName": "entity",
+      "handle": "INTERNAL-49903590",
+      "roles": [
+        "administrative"
+      ],
+      "events": [
+        {
+          "eventAction": "last changed",
+          "eventDate": "2026-07-17T21:52:52+00:00"
+        }
+      ]
+    },
+    {
+      "objectClassName": "entity",
+      "handle": "INTERNAL-49903591",
+      "roles": [
+        "technical"
+      ],
+      "events": [
+        {
+          "eventAction": "last changed",
+          "eventDate": "2026-07-17T21:52:52+00:00"
+        }
+      ]
+    },
+    {
+      "objectClassName": "entity",
+      "handle": "INTERNAL-49903592",
+      "roles": [
+        "billing"
+      ],
+      "events": [
+        {
+          "eventAction": "last changed",
+          "eventDate": "2026-07-17T21:52:52+00:00"
+        }
+      ]
+    },
+    {
+      "objectClassName": "entity",
+      "handle": "1861",
+      "roles": [
+        "registrar"
+      ],
+      "vcardArray": [
+        "vcard",
+        [
+          [
+            "version",
+            {},
+            "text",
+            "4.0"
+          ],
+          [
+            "kind",
+            {},
+            "text",
+            "organization"
+          ],
+          [
+            "fn",
+            {},
+            "text",
+            "Porkbun LLC"
+          ]
+        ]
+      ],
+      "publicIds": [
+        {
+          "type": "IANA Registrar ID",
+          "identifier": "1861"
+        }
+      ],
+      "entities": [
+        {
+          "objectClassName": "entity",
+          "handle": "1",
+          "roles": [
+            "abuse"
+          ]
+        }
+      ]
+    }
+  ],
+  "status": [
+    "active"
+  ]
+}

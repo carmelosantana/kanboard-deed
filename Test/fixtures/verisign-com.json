@@ -1,0 +1,151 @@
+{
+  "objectClassName": "domain",
+  "handle": "1736601939_DOMAIN_COM-VRSN",
+  "ldhName": "MADEINNEWBURGH.COM",
+  "links": [
+    {
+      "value": "https://rdap.verisign.com/com/v1/domain/madeinnewburgh.com",
+      "rel": "self",
+      "href": "https://rdap.verisign.com/com/v1/domain/madeinnewburgh.com",
+      "type": "application/rdap+json"
+    },
+    {
+      "value": "https://rdap.verisign.com/com/v1/domain/madeinnewburgh.com",
+      "rel": "related",
+      "href": "https://cart-before.porkbun.horse/rdap/domain/MADEINNEWBURGH.COM",
+      "type": "application/rdap+json"
+    }
+  ],
+  "status": [
+    "client delete prohibited",
+    "client transfer prohibited"
+  ],
+  "entities": [
+    {
+      "objectClassName": "entity",
+      "handle": "1861",
+      "roles": [
+        "registrar"
+      ],
+      "links": [
+        {
+          "href": "http://porkbun.com",
+          "type": "text/html",
+          "value": "https://cart-before.porkbun.horse/rdap/",
+          "rel": "about"
+        }
+      ],
+      "publicIds": [
+        {
+          "type": "IANA Registrar ID",
+          "identifier": "1861"
+        }
+      ],
+      "vcardArray": [
+        "vcard",
+        [
+          [
+            "version",
+            {},
+            "text",
+            "4.0"
+          ],
+          [
+            "fn",
+            {},
+            "text",
+            "Porkbun LLC"
+          ]
+        ]
+      ],
+      "entities": [
+        {
+          "objectClassName": "entity",
+          "roles": [
+            "abuse"
+          ]
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "eventAction": "registration",
+      "eventDate": "2012-07-31T15:43:47Z"
+    },
+    {
+      "eventAction": "expiration",
+      "eventDate": "2027-07-31T15:43:47Z"
+    },
+    {
+      "eventAction": "last changed",
+      "eventDate": "2026-07-30T03:17:05Z"
+    },
+    {
+      "eventAction": "last update of RDAP database",
+      "eventDate": "2026-11-21T15:31:27Z"
+    }
+  ],
+  "secureDNS": {
+    "delegationSigned": false
+  },
+  "nameservers": [
+    {
+      "objectClassName": "nameserver",
+      "ldhName": "AMANDA.NS.CLOUDFLARE.COM"
+    },
+    {
+      "objectClassName": "nameserver",
+      "ldhName": "DEVIN.NS.CLOUDFLARE.COM"
+    }
+  ],
+  "rdapConformance": [
+    "rdap_level_0",
+    "icann_rdap_technical_implementation_guide_1",
+    "icann_rdap_response_profile_1"
+  ],
+  "notices": [
+    {
+      "title": "Terms of Service",
+      "description": [
+        "Service subject to Terms of Use."
+      ],
+      "links": [
+        {
+          "href": "https://www.verisign.com/domain-names/registration-data-access-protocol/terms-service/index.xhtml",
+          "type": "text/html",
+          "value": "https://rdap.verisign.com/com/v1/domain/madeinnewburgh.com",
+          "rel": "terms-of-service"
+        }
+      ]
+    },
+    {
+      "title": "Status Codes",
+      "description": [
+        "For more information on domain status codes, please visit https://icann.org/epp"
+      ],
+      "links": [
+        {
+          "href": "https://icann.org/epp",
+          "type": "text/html",
+          "value": "https://rdap.verisign.com/com/v1/domain/madeinnewburgh.com",
+          "rel": "glossary"
+        }
+      ]
+    },
+    {
+      "title": "RDDS Inaccuracy Complaint Form",
+      "description": [
+        "URL of the ICANN RDDS Inaccuracy Complaint Form: https://icann.org/wicf"
+      ],
+      "links": [
+        {
+          "href": "https://icann.org/wicf",
+          "type": "text/html",
+          "value": "https://rdap.verisign.com/com/v1/domain/madeinnewburgh.com",
+          "rel": "help"
+        }
+      ]
+    }
+  ]
+}
