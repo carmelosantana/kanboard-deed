@@ -9,6 +9,7 @@ use Kanboard\Plugin\Deed\Client\HttpFetcher;
 use Kanboard\Plugin\Deed\Client\RdapClient;
 use Kanboard\Plugin\Deed\Console\RefreshCommand;
 use Kanboard\Plugin\Deed\Model\CacheModel;
+use Kanboard\Plugin\Deed\Model\DnsLookup;
 use Kanboard\Plugin\Deed\Model\DomainModel;
 use Kanboard\Plugin\Deed\Model\RdapParser;
 use Kanboard\Plugin\Deed\Model\RefreshService;
@@ -24,6 +25,7 @@ class Plugin extends Base
         $version = $this->getPluginVersion();
         $this->container['deedCache'] = static fn ($container) => new CacheModel($container['db']->getConnection());
         $this->container['deedDomainModel'] = static fn ($container) => new DomainModel($container['db']->getConnection());
+        $this->container['deedDnsLookup'] = static fn () => new DnsLookup();
         $this->container['deedHttp'] = static fn ($container) => new HttpFetcher(
             $version,
             $container['configModel']->get('application_url')
@@ -72,6 +74,10 @@ class Plugin extends Base
             'add' => 'deed/domains/add',
             'bulk' => 'deed/domains/bulk',
             'refresh' => 'deed/domains/refresh',
+            'show' => 'deed/domains/show/:domain_id',
+            'dns' => 'deed/domains/dns/:domain_id',
+            'edit' => 'deed/domains/edit/:domain_id',
+            'remove' => 'deed/domains/remove/:domain_id',
         ];
         foreach ($domainActions as $action => $path) {
             $this->route->addRoute($path, 'DomainController', $action, 'Deed');
