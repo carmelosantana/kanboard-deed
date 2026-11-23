@@ -2,6 +2,7 @@
 
 namespace Kanboard\Plugin\Deed\Model;
 
+use Closure;
 use Kanboard\Model\CommentModel;
 use Kanboard\Model\ConfigModel;
 use Kanboard\Model\ProjectModel;
@@ -10,6 +11,7 @@ use Kanboard\Model\TaskModel;
 use Kanboard\Model\TaskStatusModel;
 use Kanboard\Plugin\Deed\Client\RdapClient;
 use PDO;
+use PDOException;
 use RuntimeException;
 use Throwable;
 
@@ -17,8 +19,11 @@ final class RenewalService
 {
     private const DAY = 86400;
     private const DEFAULT_THRESHOLDS = [30, 14, 7];
+    private const POSTGRES_LOCK_NAMESPACE = 0x44454544; // DEED
+    private const MYSQL_LOCK_KEY = "CONCAT('deed:', LEFT(SHA2(DATABASE(), 256), 40), ':', ?)";
 
-    private readonly string $rowLock;
+    private readonly string $driver;
+    private bool $evaluating = false;
     private ?string $lastProblem = null;
 
     public function __construct(
@@ -29,7 +34,7 @@ final class RenewalService
         private readonly TaskStatusModel $taskStatus,
         private readonly CommentModel $comments
     ) {
-        $this->rowLock = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite' ? '' : ' FOR UPDATE';
+        $this->driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
     }
 
     public function lastProblem(): ?string
@@ -39,35 +44,71 @@ final class RenewalService
 
     public function evaluate(array $domain, int $now): void
     {
+        // Synchronous task hooks can reenter this service on the same connection.
+        if ($this->evaluating) {
+            return;
+        }
         $this->lastProblem = null;
         $expiry = RdapClient::effectiveExpiry($domain['registry_expires_at'], $domain['registrar_expires_at']);
         if ($expiry === null && $domain['status'] !== 'not_found') {
             return;
         }
 
-        // Serialize evaluations per domain and persist the core task writes with the cycle.
-        $this->pdo->beginTransaction();
+        // Core event subscribers can commit the shared PDO transaction. Use locks
+        // that survive core writes so concurrent evaluations cannot both retry a claim.
+        $release = $this->acquireLock((int) $domain['id']);
+        $this->evaluating = true;
         try {
-            if ($this->lockDomain($domain)) {
+            if ($this->isCurrentDomain($domain)) {
                 $this->evaluateCycles($domain, $now, $expiry);
             }
-            $this->pdo->commit();
-        } catch (Throwable $exception) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-            throw $exception;
+        } finally {
+            $this->evaluating = false;
+            $release();
         }
     }
 
-    private function lockDomain(array $domain): bool
+    private function acquireLock(int $domainId): Closure
     {
-        if ($this->rowLock === '') {
-            // SQLite starts a deferred transaction, so take the write lock before reading.
-            $this->pdo->prepare('UPDATE deed_domains SET id = id WHERE id = ?')->execute([$domain['id']]);
+        if ($this->driver === 'sqlite') {
+            $path = $this->pdo->query('PRAGMA database_list')->fetch(PDO::FETCH_ASSOC)['file'];
+            if ($path === '') {
+                // Kanboard's in-memory SQLite database is private to this connection.
+                return static function (): void {};
+            }
+            $lock = fopen($path.'.deed-renewals.lock', 'c');
+            if ($lock === false || !flock($lock, LOCK_EX)) {
+                if (is_resource($lock)) {
+                    fclose($lock);
+                }
+                throw new RuntimeException('Could not lock Deed renewals');
+            }
+            return static function () use ($lock): void {
+                fclose($lock);
+            };
         }
 
-        $statement = $this->pdo->prepare('SELECT last_checked_at FROM deed_domains WHERE id = ?'.$this->rowLock);
+        if ($this->driver === 'mysql') {
+            $statement = $this->pdo->prepare('SELECT GET_LOCK('.self::MYSQL_LOCK_KEY.', 10)');
+            $statement->execute([$domainId]);
+            if ((int) $statement->fetchColumn() !== 1) {
+                throw new RuntimeException('Could not lock Deed renewals');
+            }
+            $unlock = 'SELECT RELEASE_LOCK('.self::MYSQL_LOCK_KEY.')';
+        } else {
+            $key = self::POSTGRES_LOCK_NAMESPACE.', ?';
+            $this->pdo->prepare("SELECT pg_advisory_lock($key)")->execute([$domainId]);
+            $unlock = "SELECT pg_advisory_unlock($key)";
+        }
+
+        return function () use ($unlock, $domainId): void {
+            $this->pdo->prepare($unlock)->execute([$domainId]);
+        };
+    }
+
+    private function isCurrentDomain(array $domain): bool
+    {
+        $statement = $this->pdo->prepare('SELECT last_checked_at FROM deed_domains WHERE id = ?');
         $statement->execute([$domain['id']]);
         $current = $statement->fetch(PDO::FETCH_ASSOC);
 
@@ -84,11 +125,15 @@ final class RenewalService
         $current = null;
         $notFound = $domain['status'] === 'not_found';
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $cycle) {
+            // Core may have saved a task before a previous run could link it.
+            if ($cycle['closed_at'] === null && (int) $cycle['task_id'] === 0) {
+                $cycle['task_id'] = $this->recoverTask((int) $cycle['id']);
+            }
             if ($notFound) {
                 $this->sendNotices($cycle, ['not_found' => "Registry reports {$domain['name']} as not registered."]);
             } elseif ((int) $cycle['cycle_expires_at'] === $expiry) {
                 $current = $cycle;
-            } elseif ($cycle['cycle_expires_at'] < $expiry) {
+            } else {
                 $this->closeCycle($cycle, $expiry, $now);
             }
         }
@@ -99,16 +144,18 @@ final class RenewalService
 
         $thresholds = $this->thresholds();
         $first = array_shift($thresholds);
-        $days = (int) ceil(($expiry - $now) / self::DAY);
-        if ($current === null && $days <= $first) {
-            $current = $this->createCycle($domain, $expiry);
+        $secondsLeft = $expiry - $now;
+        if (($current === null || ($current['closed_at'] === null && (int) $current['task_id'] === 0))
+            && $secondsLeft <= $first * self::DAY) {
+            $current = $this->createCycle($domain, $expiry, $current);
         }
 
         if ($current !== null) {
+            $days = max(0, intdiv($secondsLeft, self::DAY));
             $notices = [];
             foreach ($thresholds as $threshold) {
-                if ($days <= $threshold) {
-                    $notices[$threshold] = "Expires in {$threshold} days.";
+                if ($secondsLeft <= $threshold * self::DAY) {
+                    $notices[$threshold] = "Expires in {$days} days.";
                 }
             }
             $this->sendNotices($current, $notices);
@@ -129,7 +176,7 @@ final class RenewalService
         return $thresholds ?: self::DEFAULT_THRESHOLDS;
     }
 
-    private function createCycle(array $domain, int $expiry): ?array
+    private function createCycle(array $domain, int $expiry, ?array $cycle): ?array
     {
         $projectId = (int) $domain['project_id'];
         if (!$this->projects->exists($projectId)) {
@@ -140,35 +187,89 @@ final class RenewalService
             }
         }
 
-        $taskId = $this->taskCreation->create([
-            'title' => "Renew {$domain['name']} (expires ".gmdate('Y-m-d', $expiry).')',
-            'project_id' => $projectId,
-            'date_due' => $expiry,
-            'owner_id' => (int) $domain['assignee_id'],
-        ]);
+        if ($cycle === null) {
+            $cycle = $this->claimCycle((int) $domain['id'], $expiry);
+            if ($cycle === null) {
+                return null;
+            }
+        }
+
+        $cycleId = (int) $cycle['id'];
+        try {
+            $taskId = $this->taskCreation->create([
+                'title' => "Renew {$domain['name']} (expires ".gmdate('Y-m-d', $expiry).')',
+                'project_id' => $projectId,
+                'date_due' => $expiry,
+                'owner_id' => (int) $domain['assignee_id'],
+                'reference' => $this->taskReference($cycleId),
+            ]);
+        } catch (Throwable $exception) {
+            // Core inserts the task before dispatching events and running hooks.
+            $this->recoverTask($cycleId);
+            throw $exception;
+        }
         if ($taskId <= 0) {
             throw new RuntimeException('Could not create Deed renewal task');
         }
 
-        $statement = $this->pdo->prepare(
-            'INSERT INTO deed_renewals (domain_id, cycle_expires_at, task_id) VALUES (?, ?, ?)'
-        );
-        $statement->execute([$domain['id'], $expiry, $taskId]);
+        $this->linkTask($cycleId, $taskId);
+        $cycle['task_id'] = $taskId;
+        return $cycle;
+    }
 
-        return [
-            'domain_id' => $domain['id'],
-            'cycle_expires_at' => $expiry,
-            'task_id' => $taskId,
-            'closed_at' => null,
-            'thresholds_sent' => '[]',
-        ];
+    private function claimCycle(int $domainId, int $expiry): ?array
+    {
+        $sql = 'INSERT INTO deed_renewals (domain_id, cycle_expires_at, task_id) VALUES (?, ?, 0)';
+        if ($this->driver !== 'mysql') {
+            $sql .= ' ON CONFLICT (domain_id, cycle_expires_at) DO NOTHING';
+        }
+        $statement = $this->pdo->prepare($sql);
+        try {
+            $statement->execute([$domainId, $expiry]);
+        } catch (PDOException $exception) {
+            if ($this->driver === 'mysql' && (int) ($exception->errorInfo[1] ?? 0) === 1062) {
+                return null;
+            }
+            throw $exception;
+        }
+        if ($statement->rowCount() === 0) {
+            return null;
+        }
+
+        $statement = $this->pdo->prepare(
+            'SELECT * FROM deed_renewals WHERE domain_id = ? AND cycle_expires_at = ?'
+        );
+        $statement->execute([$domainId, $expiry]);
+        return $statement->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    private function taskReference(int $cycleId): string
+    {
+        return 'deed:renewal:'.$cycleId;
+    }
+
+    private function recoverTask(int $cycleId): int
+    {
+        $statement = $this->pdo->prepare('SELECT id FROM tasks WHERE reference = ? ORDER BY id LIMIT 1');
+        $statement->execute([$this->taskReference($cycleId)]);
+        $taskId = (int) $statement->fetchColumn();
+        if ($taskId > 0) {
+            $this->linkTask($cycleId, $taskId);
+        }
+        return $taskId;
+    }
+
+    private function linkTask(int $cycleId, int $taskId): void
+    {
+        $this->pdo->prepare('UPDATE deed_renewals SET task_id = ? WHERE id = ?')->execute([$taskId, $cycleId]);
     }
 
     private function closeCycle(array $cycle, int $expiry, int $now): void
     {
         $taskId = (int) $cycle['task_id'];
-        if ($this->lockOpenTask($taskId)) {
-            $this->comment($taskId, 'Renewed — registry now shows '.gmdate('Y-m-d', $expiry).'.');
+        if ($this->isOpenTask($taskId)) {
+            $prefix = $expiry > (int) $cycle['cycle_expires_at'] ? 'Renewed' : 'Expiry changed';
+            $this->comment($taskId, $prefix.' — registry now shows '.gmdate('Y-m-d', $expiry).'.');
             if (!$this->taskStatus->close($taskId)) {
                 throw new RuntimeException('Could not close Deed renewal task');
             }
@@ -186,14 +287,12 @@ final class RenewalService
         $sent = json_decode($cycle['thresholds_sent'], true, flags: JSON_THROW_ON_ERROR);
         $pending = array_diff_key($notices, array_fill_keys($sent, true));
         $taskId = (int) $cycle['task_id'];
-        if ($pending === [] || !$this->lockOpenTask($taskId)) {
+        if ($pending === [] || !$this->isOpenTask($taskId)) {
             return;
         }
 
-        foreach ($pending as $marker => $message) {
-            $this->comment($taskId, $message);
-            $sent[] = $marker;
-        }
+        $this->comment($taskId, reset($pending));
+        $sent = array_merge($sent, array_keys($pending));
 
         $statement = $this->pdo->prepare(
             'UPDATE deed_renewals SET thresholds_sent = ? WHERE domain_id = ? AND cycle_expires_at = ?'
@@ -201,9 +300,9 @@ final class RenewalService
         $statement->execute([json_encode($sent, JSON_THROW_ON_ERROR), $cycle['domain_id'], $cycle['cycle_expires_at']]);
     }
 
-    private function lockOpenTask(int $taskId): bool
+    private function isOpenTask(int $taskId): bool
     {
-        $statement = $this->pdo->prepare('SELECT is_active FROM tasks WHERE id = ?'.$this->rowLock);
+        $statement = $this->pdo->prepare('SELECT is_active FROM tasks WHERE id = ?');
         $statement->execute([$taskId]);
 
         return (int) $statement->fetchColumn() === TaskModel::STATUS_OPEN;

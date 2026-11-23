@@ -4,6 +4,7 @@ namespace Kanboard\Plugin\Deed\Test;
 
 use Kanboard\Plugin\Deed\Model\RenewalService;
 use Kanboard\Plugin\Deed\Plugin;
+use Kanboard\Subscriber\ProjectDailySummarySubscriber;
 use KanboardTests\units\Base;
 use PDO;
 use RuntimeException;
@@ -102,6 +103,71 @@ class RenewalServiceTest extends Base
         $this->assertTrue($this->container['taskStatusModel']->isOpen((int) $cycles[1]['task_id']));
     }
 
+    public function testRenewalLifecycleWithSynchronousProjectMetrics(): void
+    {
+        $this->dispatcher->addSubscriber(new ProjectDailySummarySubscriber($this->container));
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 30);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        $this->evaluate($domain, 14);
+        $this->evaluate($domain, 7);
+
+        $domain['registrar_expires_at'] += 365 * self::DAY;
+        $domain['registry_expires_at'] += 365 * self::DAY;
+        $this->evaluate($domain, 6);
+        $this->evaluate($domain, 6);
+
+        $this->assertSame(1, $this->taskCount());
+        $this->assertCount(1, $this->cycles());
+        $this->assertTrue($this->container['taskStatusModel']->isClosed($taskId));
+        $this->assertSame($this->expiry - 6 * self::DAY, (int) $this->cycles()[0]['closed_at']);
+        $this->assertSame([
+            'Expires in 14 days.',
+            'Expires in 7 days.',
+            'Renewed — registry now shows 2028-05-14.',
+        ], $this->comments($taskId));
+    }
+
+    public function testEarlierExpirySupersedesPreviousCycle(): void
+    {
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        $domain['registry_expires_at'] = $this->expiry - self::DAY;
+        $this->evaluate($domain, 30);
+        $this->evaluate($domain, 30);
+
+        $cycles = $this->cycles();
+        $this->assertCount(2, $cycles);
+        $this->assertSame(2, $this->taskCount());
+        $this->assertSame(['Expiry changed — registry now shows 2027-05-14.'], $this->comments($taskId));
+        $this->assertSame($this->expiry - 30 * self::DAY, (int) $cycles[0]['closed_at']);
+        $this->assertTrue($this->container['taskStatusModel']->isClosed($taskId));
+        $this->assertNull($cycles[1]['closed_at']);
+        $this->assertTrue($this->container['taskStatusModel']->isOpen((int) $cycles[1]['task_id']));
+    }
+
+    public function testLateCreationAndMissedSweepsCoalesceThresholds(): void
+    {
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 5);
+        $this->evaluate($domain, 4);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        $this->assertSame(['Expires in 5 days.'], $this->comments($taskId));
+        $this->assertSame([14, 7], json_decode($this->cycles()[0]['thresholds_sent'], true));
+
+        $domain['registrar_expires_at'] += 365 * self::DAY;
+        $domain['registry_expires_at'] += 365 * self::DAY;
+        $expiry = $domain['registrar_expires_at'];
+        $this->renewals->evaluate($domain, $expiry - 30 * self::DAY);
+        $taskId = (int) $this->cycles()[1]['task_id'];
+        $this->renewals->evaluate($domain, $expiry - 5 * self::DAY - 1);
+        $this->renewals->evaluate($domain, $expiry - 5 * self::DAY);
+        $this->assertSame(['Expires in 5 days.'], $this->comments($taskId));
+        $this->assertSame([14, 7], json_decode($this->cycles()[1]['thresholds_sent'], true));
+    }
+
     public function testHumanClosedTaskStaysClosedAndReceivesNoComments(): void
     {
         $domain = $this->watch($this->project);
@@ -194,7 +260,37 @@ class RenewalServiceTest extends Base
         $this->assertSame(['Expires in 7 days.'], $this->comments($taskId));
     }
 
-    public function testFailedTaskCreationRollsBackAndCanBeRetried(): void
+    public function testFailedTaskCreationLeavesClaimAndCanBeRetried(): void
+    {
+        $domain = $this->watch($this->project);
+        $fail = true;
+        $this->container['hook']->on('model:task:creation:prepare', static function () use (&$fail): void {
+            if ($fail) {
+                throw new RuntimeException('Task hook failed before saving');
+            }
+        });
+
+        try {
+            $this->evaluate($domain, 30);
+            $this->fail('Expected the task hook to interrupt evaluation');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Task hook failed before saving', $exception->getMessage());
+        }
+
+        $this->assertSame(0, $this->taskCount());
+        $cycles = $this->cycles();
+        $this->assertCount(1, $cycles);
+        $this->assertSame(0, (int) $cycles[0]['task_id']);
+
+        $fail = false;
+        $this->evaluate($domain, 30);
+        $this->evaluate($domain, 30);
+        $this->assertSame(1, $this->taskCount());
+        $this->assertSame($cycles[0]['id'], $this->cycles()[0]['id']);
+        $this->assertGreaterThan(0, (int) $this->cycles()[0]['task_id']);
+    }
+
+    public function testPersistedTaskSurvivesCreationHookFailureWithoutDuplication(): void
     {
         $domain = $this->watch($this->project);
         $fail = true;
@@ -211,14 +307,33 @@ class RenewalServiceTest extends Base
             $this->assertSame('Task hook failed after saving', $exception->getMessage());
         }
 
-        $this->assertSame(0, $this->taskCount());
-        $this->assertSame([], $this->cycles());
+        $this->assertSame(1, $this->taskCount());
+        $this->assertCount(1, $this->cycles());
+        $taskId = (int) $this->pdo->query('SELECT id FROM tasks')->fetchColumn();
 
         $fail = false;
         $this->evaluate($domain, 30);
         $this->evaluate($domain, 30);
         $this->assertSame(1, $this->taskCount());
         $this->assertCount(1, $this->cycles());
+        $this->assertSame($taskId, (int) $this->cycles()[0]['task_id']);
+    }
+
+    public function testEarlierExpiryClosesTaskWhoseCycleLinkWasInterrupted(): void
+    {
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        $this->pdo->exec('UPDATE deed_renewals SET task_id = 0');
+
+        $domain['registrar_expires_at'] -= self::DAY;
+        $this->evaluate($domain, 30);
+
+        $cycles = $this->cycles();
+        $this->assertCount(2, $cycles);
+        $this->assertSame($taskId, (int) $cycles[0]['task_id']);
+        $this->assertTrue($this->container['taskStatusModel']->isClosed($taskId));
+        $this->assertTrue($this->container['taskStatusModel']->isOpen((int) $cycles[1]['task_id']));
     }
 
     private function watch(int $project = 0): array
