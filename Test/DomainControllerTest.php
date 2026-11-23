@@ -40,7 +40,7 @@ class DomainControllerTest extends Base
             ? ['domain_id' => $this->container['deedDomainModel']->create(self::DOMAIN, 1)]
             : null;
 
-        if ($post !== null && $status === 200) {
+        if ($post !== null && $status === 303) {
             $this->allowRecordedRefresh();
         }
 
@@ -50,7 +50,7 @@ class DomainControllerTest extends Base
             $this->assertStringContainsString('>Domains</a>', $body);
             $this->assertStringContainsString('Assets/css/deed.css', $body);
             $this->assertStringContainsString('Assets/js/deed.js', $body);
-        } else {
+        } elseif ($status === 403) {
             $this->assertStringNotContainsString('>Domains</a>', $body);
         }
     }
@@ -59,7 +59,7 @@ class DomainControllerTest extends Base
     {
         foreach ([Role::APP_ADMIN => 200, Role::APP_MANAGER => 200, Role::APP_USER => 403] as $role => $status) {
             foreach (['', '/add', '/bulk', '/refresh'] as $suffix) {
-                yield $role.$suffix => [$role, 'deed/domains'.$suffix, $status];
+                yield $role.$suffix => [$role, 'deed/domains'.$suffix, $status === 200 && $suffix === '/refresh' ? 303 : $status];
             }
         }
     }
@@ -84,8 +84,13 @@ class DomainControllerTest extends Base
 
     public function testAddNormalisesAndPersistsTheDomain(): void
     {
-        [$status] = $this->dispatch('deed/domains/add', Role::APP_ADMIN, ['domain' => 'HTTPS://Example.COM/path']);
-        $this->assertSame(200, $status);
+        $this->assertRedirectTo('index', $this->dispatch('deed/domains/add', Role::APP_ADMIN, [
+            'domain' => 'HTTPS://Example.COM/path',
+        ]));
+        [, $body] = $this->dispatch('deed/domains', Role::APP_ADMIN);
+        $this->assertStringContainsString('Domain added.', $body);
+        [, $reloaded] = $this->dispatch('deed/domains', Role::APP_ADMIN);
+        $this->assertStringNotContainsString('Domain added.', $reloaded);
         $domains = $this->container['deedDomainModel']->listAll();
         $this->assertSame(['example.com'], array_column($domains, 'name'));
         $this->assertSame(1, (int) $domains[0]['created_by']);
@@ -97,10 +102,11 @@ class DomainControllerTest extends Base
         $domains = $this->container['deedDomainModel'];
         $domains->create('existing.com', 1);
 
-        [$status, $body] = $this->dispatch('deed/domains/bulk', Role::APP_MANAGER, [
+        $this->assertRedirectTo('bulk', $this->dispatch('deed/domains/bulk', Role::APP_MANAGER, [
             'domains' => "new.com\nNEW.com.\nsecond.com\nexisting.com\n<script>",
-        ]);
+        ]));
 
+        [$status, $body] = $this->dispatch('deed/domains/bulk', Role::APP_MANAGER);
         $this->assertSame(200, $status);
         $this->assertStringContainsString('Added: 2', $body);
         $this->assertStringContainsString('Existing: 1', $body);
@@ -108,6 +114,24 @@ class DomainControllerTest extends Base
         $this->assertStringContainsString('&lt;script&gt;', $body);
         $this->assertStringContainsString('Paste one domain per line', $body);
         $this->assertSame(['existing.com', 'new.com', 'second.com'], array_column($domains->listAll(), 'name'));
+        [, $reloaded] = $this->dispatch('deed/domains/bulk', Role::APP_MANAGER);
+        $this->assertStringNotContainsString('Added: 2', $reloaded);
+    }
+
+    public function testValidationFailuresRenderTheFormsWithoutRedirecting(): void
+    {
+        foreach ([
+            ['add', ['domain' => 'bad_name'], 'Enter a valid domain name.'],
+            ['bulk', ['domains' => ' '], 'Enter at least one valid domain name.'],
+            ['bulk', ['domains' => 'bad_name'], 'Enter at least one valid domain name.'],
+        ] as [$action, $input, $message]) {
+            [$status, $body, $location] = $this->dispatch('deed/domains/'.$action, Role::APP_MANAGER, $input);
+            $this->assertSame(200, $status);
+            $this->assertNull($location);
+            $this->assertStringContainsString('<form method="post"', $body);
+            $this->assertStringContainsString($message, $body);
+        }
+        $this->assertSame([], $this->container['deedDomainModel']->listAll());
     }
 
     public function testRefreshNowUpdatesOnlyTheRequestedDomain(): void
@@ -117,10 +141,12 @@ class DomainControllerTest extends Base
         $target = $domains->create(self::DOMAIN, 1);
         $this->allowRecordedRefresh();
 
-        [$status, $body] = $this->dispatch('deed/domains/refresh', Role::APP_MANAGER, ['domain_id' => $target]);
+        $this->assertRedirectTo('index', $this->dispatch('deed/domains/refresh', Role::APP_MANAGER, ['domain_id' => $target]));
 
-        $this->assertSame(200, $status);
+        [, $body] = $this->dispatch('deed/domains', Role::APP_MANAGER);
         $this->assertStringContainsString('Domain refreshed.', $body);
+        [, $reloaded] = $this->dispatch('deed/domains', Role::APP_MANAGER);
+        $this->assertStringNotContainsString('Domain refreshed.', $reloaded);
         $this->assertSame('ok', $domains->get($target)['status']);
         $this->assertSame('pending', $domains->get($other)['status']);
         $this->assertNull($domains->get($other)['last_checked_at']);
@@ -131,6 +157,49 @@ class DomainControllerTest extends Base
         $this->container['deedDomainModel']->create(self::DOMAIN, 1);
         [$status] = $this->dispatch('deed/domains/refresh', Role::APP_MANAGER);
         $this->assertSame(405, $status);
+    }
+
+    public function testRefreshReturnsNotFoundForAnUnknownDomainId(): void
+    {
+        [$status, $body, $location] = $this->dispatch('deed/domains/refresh', Role::APP_MANAGER, ['domain_id' => '123']);
+
+        $this->assertSame(404, $status);
+        $this->assertStringContainsString('Domain not found.', $body);
+        $this->assertNull($location);
+    }
+
+    public function testListAndDetailShowRegistrationStatuses(): void
+    {
+        $domains = $this->container['deedDomainModel'];
+        $statement = $this->container['db']->getConnection()->prepare(
+            'UPDATE deed_domains SET status = ?, last_error = ? WHERE id = ?'
+        );
+        $missing = $domains->create('missing.com', 1);
+        $failed = $domains->create('failed.com', 1);
+        $referral = $domains->create('referral.com', 1);
+        $healthy = $domains->create('healthy.com', 1);
+        $statement->execute(['not_found', null, $missing]);
+        $statement->execute(['error', 'RDAP "timeout" <details>', $failed]);
+        $statement->execute(['ok', 'http_503', $referral]);
+        $statement->execute(['ok', null, $healthy]);
+
+        [, $list] = $this->dispatch('deed/domains', Role::APP_MANAGER);
+        $badge = '<span class="deed-badge deed-badge--red">Not registered</span>';
+        $this->assertStringContainsString($badge, $list);
+        $this->assertStringNotContainsString('>Not found<', $list);
+        $escapedError = 'RDAP &quot;timeout&quot; &lt;details&gt;';
+        $this->assertStringContainsString('title="'.$escapedError.'">Error</span>', $list);
+        $this->assertSame(1, substr_count($list, 'Registrar data unavailable'));
+
+        [, $detail] = $this->dispatch('deed/domains/show/'.$missing, Role::APP_MANAGER);
+        $this->assertStringContainsString($badge, $detail);
+        [, $detail] = $this->dispatch('deed/domains/show/'.$failed, Role::APP_MANAGER);
+        $this->assertMatchesRegularExpression('~>Error</span>\s*<div>'.preg_quote($escapedError, '~').'</div>~', $detail);
+        $this->assertStringNotContainsString('Registrar data unavailable', $detail);
+        [, $detail] = $this->dispatch('deed/domains/show/'.$referral, Role::APP_MANAGER);
+        $this->assertStringContainsString('Registrar data unavailable', $detail);
+        [, $detail] = $this->dispatch('deed/domains/show/'.$healthy, Role::APP_MANAGER);
+        $this->assertStringNotContainsString('Registrar data unavailable', $detail);
     }
 
     public function testTableMarksExpiryThresholdsAndStaleRecords(): void
@@ -178,6 +247,13 @@ class DomainControllerTest extends Base
         $this->container['deedHttp'] = $fetcher;
     }
 
+    private function assertRedirectTo(string $action, array $response): void
+    {
+        [$status, , $location] = $response;
+        $this->assertSame(303, $status);
+        $this->assertSame($this->container['helper']->url->to('DomainController', $action, ['plugin' => 'Deed']), $location);
+    }
+
     private function dispatch(string $path, string $role, ?array $post = null): array
     {
         $user = $this->container['userModel']->getById(1);
@@ -194,6 +270,15 @@ class DomainControllerTest extends Base
         $response = new class($this->container) extends Response {
             public int $code = 200;
             public string $body = '';
+            public ?string $location = null;
+
+            public function withHeader($header, $value)
+            {
+                if ($header === 'Location') {
+                    $this->location = $value;
+                }
+                return parent::withHeader($header, $value);
+            }
 
             public function withStatusCode($statusCode)
             {
@@ -226,6 +311,6 @@ class DomainControllerTest extends Base
         };
         $runner->execute();
 
-        return [$response->code, $response->body];
+        return [$response->code, $response->body, $response->location];
     }
 }

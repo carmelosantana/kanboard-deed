@@ -6,17 +6,13 @@
     </ul>
 </div>
 
-<?php if ($message !== null): ?>
-    <p class="alert alert-info" role="status"><?= $this->text->e($message) ?></p>
-<?php endif ?>
-
 <?php if ($domains === []): ?>
     <p><?= t('No domains are on the watchlist.') ?></p>
 <?php else: ?>
     <?php $statuses = [
         'pending' => t('Pending'),
         'ok' => t('OK'),
-        'not_found' => t('Not found'),
+        'not_found' => t('Not registered'),
         'unsupported' => t('Unsupported'),
         'error' => t('Error'),
     ]; ?>
@@ -53,7 +49,18 @@
                                 }) ?></span>
                             <?php endif ?>
                         </td>
-                        <td><?= $this->text->e($statuses[$domain['status']] ?? $domain['status']) ?></td>
+                        <td>
+                            <?php
+                            $status = $domain['status'];
+                            $error = $domain['last_error'];
+                            $badge = $status === 'not_found' ? ' deed-badge--red' : '';
+                            $title = $status === 'error' && $error !== null ? ' title="'.$this->text->e($error).'"' : '';
+                            ?>
+                            <span class="deed-badge<?= $badge ?>"<?= $title ?>><?= $this->text->e($statuses[$status] ?? $status) ?></span>
+                            <?php if ($status === 'ok' && $error !== null): ?>
+                                <div><?= t('Registrar data unavailable') ?></div>
+                            <?php endif ?>
+                        </td>
                         <td><?= $this->text->e($projects[$domain['project_id']] ?? '—') ?></td>
                         <td>
                             <?= $domain['last_checked_at'] === null

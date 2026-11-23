@@ -66,12 +66,11 @@ final class DomainModel
         $result = ['added' => [], 'existing' => [], 'invalid' => []];
         $seen = [];
         $invalid = [];
-        foreach (preg_split('/[,\r\n]+/', $input) as $entry) {
-            $entry = trim($entry, " \t\r\n\v\f");
-            if ($entry === '') {
-                continue;
-            }
-
+        $entries = preg_split('/[,\s]+/u', $input, -1, PREG_SPLIT_NO_EMPTY);
+        if ($entries === false) {
+            $entries = preg_split('/[,\s]+/', $input, -1, PREG_SPLIT_NO_EMPTY);
+        }
+        foreach ($entries as $entry) {
             try {
                 $name = self::normalise($entry);
             } catch (InvalidArgumentException) {

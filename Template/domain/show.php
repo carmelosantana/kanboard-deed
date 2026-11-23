@@ -69,7 +69,16 @@ $domainRoute = ['plugin' => 'Deed', 'domain_id' => $domain['id']];
     <h3><?= t('Registration') ?></h3>
     <dl>
         <dt><?= t('Watchlist status') ?></dt>
-        <dd><?= $this->text->e($status) ?></dd>
+        <dd>
+            <span class="deed-badge<?= $domain['status'] === 'not_found' ? ' deed-badge--red' : '' ?>"><?= $this->text->e($status) ?></span>
+            <?php if ($domain['last_error'] !== null): ?>
+                <?php if ($domain['status'] === 'error'): ?>
+                    <div><?= $this->text->e($domain['last_error']) ?></div>
+                <?php elseif ($domain['status'] === 'ok'): ?>
+                    <div><?= t('Registrar data unavailable') ?></div>
+                <?php endif ?>
+            <?php endif ?>
+        </dd>
         <?php foreach ($fields as $field => $label): ?>
             <?php $value = in_array($field, ['statuses', 'nameservers'], true)
                 ? json_decode($domain[$field], true)

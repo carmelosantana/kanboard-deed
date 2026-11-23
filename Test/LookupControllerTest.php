@@ -109,7 +109,7 @@ class LookupControllerTest extends Base
         $this->assertNotEmpty($post['csrf_token']);
 
         [$addStatus] = $this->dispatch('deed/domains/add', Role::APP_ADMIN, $post);
-        $this->assertSame(200, $addStatus);
+        $this->assertSame(303, $addStatus);
         $this->assertSame(['example.com'], array_column($model->listAll(), 'name'));
     }
 

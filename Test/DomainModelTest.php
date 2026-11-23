@@ -98,7 +98,7 @@ class DomainModelTest extends Base
             'added' => ['a.com', 'b.org'],
             'existing' => [],
             'invalid' => ['bad_name'],
-        ], $this->domains->bulkAdd("a.com\nb.org, bad_name\na.com", 3));
+        ], $this->domains->bulkAdd("a.com b.org,\tbad_name\r\na.com", 3));
 
         $this->assertSame([
             'added' => ['c.net'],

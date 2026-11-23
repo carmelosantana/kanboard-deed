@@ -9,6 +9,8 @@ use Kanboard\Plugin\Deed\Model\SnapshotModel;
 
 class DomainController extends BaseController
 {
+    private const BULK_RESULT_FLASH = 'deed_bulk_result';
+
     public function index(): void
     {
         $this->renderDomains();
@@ -26,7 +28,8 @@ class DomainController extends BaseController
             try {
                 $id = $this->deedDomainModel->create($domain, $this->userSession->getId());
                 if ($id !== null) {
-                    $this->renderDomains(t('Domain added.'));
+                    $this->flash->success(t('Domain added.'));
+                    $this->redirectTo('index');
                     return;
                 }
                 $error = t('This domain is already on the watchlist.');
@@ -43,13 +46,24 @@ class DomainController extends BaseController
     public function bulk(): void
     {
         $result = null;
+        $input = '';
+        $error = '';
         if ($this->request->isPost()) {
             $this->checkCSRFForm();
-            $input = $this->request->getRawValue('domains');
-            $result = $this->deedDomainModel->bulkAdd(is_string($input) ? $input : '', $this->userSession->getId());
+            $raw = $this->request->getRawValue('domains');
+            $input = is_string($raw) ? $raw : '';
+            $result = $this->deedDomainModel->bulkAdd($input, $this->userSession->getId());
+            if ($result['added'] !== [] || $result['existing'] !== []) {
+                $this->flash->setMessage(self::BULK_RESULT_FLASH, $result);
+                $this->redirectTo('bulk');
+                return;
+            }
+            $error = t('Enter at least one valid domain name.');
+        } else {
+            $result = $this->flash->getMessage(self::BULK_RESULT_FLASH) ?: null;
         }
 
-        $this->renderPage('bulk', t('Bulk add'), ['result' => $result]);
+        $this->renderPage('bulk', t('Bulk add'), compact('result', 'input', 'error'));
     }
 
     public function refresh(): void
@@ -60,21 +74,26 @@ class DomainController extends BaseController
         }
         $this->checkCSRFForm();
 
-        $id = $this->request->getRawValue('domain_id');
-        if ((!is_string($id) && !is_int($id)) || !ctype_digit((string) $id) || (int) $id < 1) {
+        $id = $this->readId($this->request->getRawValue('domain_id'));
+        if ($id === null || $id < 1) {
             $this->response->text(t('Domain not found.'), 404);
             return;
         }
 
-        $updated = $this->deedRefreshService->refresh((int) $id);
-        $message = match ($updated['status'] ?? null) {
-            'ok' => t('Domain refreshed.'),
-            'not_found' => t('The registry reports that this domain is not registered.'),
-            'unsupported' => t('RDAP is unavailable for this domain.'),
-            'error' => t('Domain refresh failed.'),
-            default => t('The refresh could not be applied.'),
+        $updated = $this->deedRefreshService->refresh($id);
+        if ($updated === null && $this->deedDomainModel->get($id) === null) {
+            $this->response->text(t('Domain not found.'), 404);
+            return;
+        }
+
+        match ($updated['status'] ?? null) {
+            'ok' => $this->flash->success(t('Domain refreshed.')),
+            'not_found' => $this->flash->success(t('Not registered')),
+            'unsupported' => $this->flash->failure(t('RDAP is unavailable for this domain.')),
+            'error' => $this->flash->failure(t('Domain refresh failed.')),
+            default => $this->flash->failure(t('The refresh could not be applied.')),
         };
-        $this->renderDomains($message);
+        $this->redirectTo('index');
     }
 
     public function show(): void
@@ -243,7 +262,7 @@ class DomainController extends BaseController
         );
     }
 
-    private function renderDomains(?string $message = null): void
+    private function renderDomains(): void
     {
         $domains = $this->deedDomainModel->listAll();
         $projects = array_column(
@@ -260,7 +279,7 @@ class DomainController extends BaseController
         }
         unset($domain);
 
-        $this->renderPage('index', t('Domains'), compact('domains', 'projects', 'message'));
+        $this->renderPage('index', t('Domains'), compact('domains', 'projects'));
     }
 
     private function renderPage(string $template, string $title, array $params, int $status = 200): void
