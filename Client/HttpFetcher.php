@@ -4,6 +4,7 @@ namespace Kanboard\Plugin\Deed\Client;
 
 use Closure;
 use RuntimeException;
+use Throwable;
 
 class HttpFetcher
 {
@@ -14,7 +15,10 @@ class HttpFetcher
     private readonly Closure $transfer;
     private readonly Closure $clock;
     private readonly Closure $sleeper;
-    private readonly string $lockDirectory;
+    /** @var array<string, true> */
+    private array $activeHosts = [];
+    /** @var array<string, float|null> */
+    private array $completedAt = [];
 
     /**
      * The transfer executes cURL options, invokes their callbacks and returns
@@ -26,15 +30,11 @@ class HttpFetcher
         private readonly Resolver $resolver = new Resolver(),
         ?Closure $transfer = null,
         ?Closure $clock = null,
-        ?Closure $sleeper = null,
-        ?string $lockDirectory = null
+        ?Closure $sleeper = null
     ) {
         $this->transfer = $transfer ?? $this->executeCurl(...);
         $this->clock = $clock ?? static fn (): float => microtime(true);
         $this->sleeper = $sleeper ?? static fn (float $seconds) => usleep((int) ceil($seconds * 1000000));
-        $this->lockDirectory = $lockDirectory ?? (defined('DATA_DIR')
-            ? DATA_DIR.'/deed-http'
-            : sys_get_temp_dir().'/kanboard-deed-'.hash('sha256', __DIR__));
     }
 
     /** @param array<string, string> $headers Optional cache validators. */
@@ -172,8 +172,18 @@ class HttpFetcher
             $options[CURLOPT_RESOLVE] = [$host.':'.$port.':'.$pinnedAddress];
         }
 
-        $lock = $this->lockHost($host);
+        if (isset($this->activeHosts[$host])) {
+            throw new RuntimeException('host_request_in_progress');
+        }
+        $this->activeHosts[$host] = true;
         try {
+            if (array_key_exists($host, $this->completedAt)) {
+                $last = $this->completedAt[$host];
+                $elapsed = $last === null ? 0.0 : max(0.0, ($this->clock)() - $last);
+                if ($elapsed < self::HOST_INTERVAL) {
+                    ($this->sleeper)(self::HOST_INTERVAL - $elapsed);
+                }
+            }
             $status = ($this->transfer)($options);
         } catch (RuntimeException $error) {
             if ($bodyTooLarge) {
@@ -181,56 +191,17 @@ class HttpFetcher
             }
             throw $error;
         } finally {
-            // Record completion before releasing the lock so a CLI or web worker waits its turn.
-            rewind($lock);
-            $timestamp = sprintf('%.6F', ($this->clock)());
-            if (!ftruncate($lock, 0) || fwrite($lock, $timestamp) !== strlen($timestamp) || !fflush($lock)) {
-                fclose($lock);
-                throw new RuntimeException('host_lock_failed');
+            try {
+                $completedAt = ($this->clock)();
+            } catch (Throwable) {
+                // Preserve the transfer outcome and wait the full interval next time.
+                $completedAt = null;
             }
-            fclose($lock);
+            $this->completedAt[$host] = $completedAt;
+            unset($this->activeHosts[$host]);
         }
 
-        return new HttpResponse($status, $body, $headers, (int) ($this->clock)());
-    }
-
-    /** @return resource */
-    private function lockHost(string $host)
-    {
-        if (!is_dir($this->lockDirectory)
-            && !@mkdir($this->lockDirectory, 0700)
-            && !is_dir($this->lockDirectory)) {
-            throw new RuntimeException('host_lock_failed');
-        }
-        $permissions = @fileperms($this->lockDirectory);
-        if ($permissions === false || ($permissions & 0077) !== 0 || is_link($this->lockDirectory)) {
-            throw new RuntimeException('host_lock_failed');
-        }
-
-        $lock = @fopen($this->lockDirectory.'/'.hash('sha256', $host).'.lock', 'c+');
-        if ($lock === false) {
-            throw new RuntimeException('host_lock_failed');
-        }
-
-        try {
-            if (!flock($lock, LOCK_EX)) {
-                throw new RuntimeException('host_lock_failed');
-            }
-            $lastRequest = stream_get_contents($lock);
-            if ($lastRequest === false) {
-                throw new RuntimeException('host_lock_failed');
-            }
-            if ($lastRequest !== '') {
-                $elapsed = max(0.0, ($this->clock)() - (float) $lastRequest);
-                if ($elapsed < self::HOST_INTERVAL) {
-                    ($this->sleeper)(self::HOST_INTERVAL - $elapsed);
-                }
-            }
-            return $lock;
-        } catch (\Throwable $error) {
-            fclose($lock);
-            throw $error;
-        }
+        return new HttpResponse($status, $body, $headers, $completedAt === null ? null : (int) $completedAt);
     }
 
     private function executeCurl(array $options): int

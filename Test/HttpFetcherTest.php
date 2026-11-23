@@ -9,25 +9,10 @@ use RuntimeException;
 
 class HttpFetcherTest extends TestCase
 {
-    private string $lockDirectory;
     private array $requests = [];
     private array $responses = [];
     private array $sleeps = [];
     private float $now = 1700000000;
-
-    protected function setUp(): void
-    {
-        $this->lockDirectory = sys_get_temp_dir().'/deed-test-'.bin2hex(random_bytes(8));
-        mkdir($this->lockDirectory, 0700);
-    }
-
-    protected function tearDown(): void
-    {
-        foreach (glob($this->lockDirectory.'/*') as $file) {
-            unlink($file);
-        }
-        rmdir($this->lockDirectory);
-    }
 
     public static function blockedAddresses(): array
     {
@@ -138,24 +123,58 @@ class HttpFetcherTest extends TestCase
         self::assertSame('"v1"', $response->header('etag'));
     }
 
-    public function testReturnsRetryAfterAndSpacesRequestsPerHostAcrossInstances(): void
+    public function testReturnsRetryAfterAndSpacesRequestsPerHostWithinAnInstance(): void
     {
         $this->responses = [
             [429, ['Retry-After: 120']],
             [200, ['Retry-After: Tue, 14 Nov 2023 22:15:20 GMT']],
             [200],
         ];
-        $first = $this->fetcher()->fetch('https://RDAP.example/');
-        $other = $this->fetcher(['other.example' => ['1.1.1.1']])->fetch('https://other.example/');
+        $fetcher = $this->fetcher(['other.example' => ['1.1.1.1']]);
+        $first = $fetcher->fetch('https://RDAP.example/');
+        $other = $fetcher->fetch('https://other.example/');
 
         self::assertSame(429, $first->status);
         self::assertSame(120, $first->retryAfter());
         self::assertSame(120, $other->retryAfter());
         self::assertSame([], $this->sleeps);
 
-        $this->fetcher()->fetch('https://rdap.example./');
+        $fetcher->fetch('https://rdap.example./');
         self::assertCount(1, $this->sleeps);
         self::assertGreaterThanOrEqual(2.0, $this->sleeps[0]);
+    }
+
+    public function testFetcherInstancesHaveIndependentRequestTiming(): void
+    {
+        $this->responses = [[200], [200]];
+        $this->fetcher()->fetch('https://rdap.example/');
+        $this->fetcher()->fetch('https://rdap.example/');
+
+        self::assertSame([], $this->sleeps);
+    }
+
+    public function testCompletionClockFailurePreservesResponseAndTransferError(): void
+    {
+        $this->responses = [[200], [200, [], [str_repeat('a', 1024 * 1024 + 1)]]];
+        $fetcher = $this->fetcher(clock: function (): float {
+            if ($this->requests !== []) {
+                throw new RuntimeException('clock_failed');
+            }
+            return $this->now;
+        });
+
+        self::assertSame(200, $fetcher->fetch('https://rdap.example/')->status);
+        $this->expectExceptionMessage('body_too_large');
+        $fetcher->fetch('https://rdap.example/');
+    }
+
+    public function testResolverKeepsIpv4WhenAaaaLookupFails(): void
+    {
+        $resolver = $this->getMockBuilder(Resolver::class)->onlyMethods(['lookupA', 'lookupAaaa'])->getMock();
+        $resolver->expects(self::once())->method('lookupA')->with('rdap.example')->willReturn(['8.8.8.8']);
+        $resolver->expects(self::once())->method('lookupAaaa')->with('rdap.example')->willReturn(false);
+
+        self::assertSame(['8.8.8.8'], $resolver->resolve('rdap.example'));
     }
 
     public function testPublicIpv6LiteralNeedsNoDnsOverride(): void
@@ -167,7 +186,7 @@ class HttpFetcherTest extends TestCase
         self::assertArrayNotHasKey(CURLOPT_RESOLVE, $this->requests[0]);
     }
 
-    private function fetcher(array $addresses = []): HttpFetcher
+    private function fetcher(array $addresses = [], ?\Closure $clock = null): HttpFetcher
     {
         $resolver = $this->createMock(Resolver::class);
         $addresses += ['rdap.example' => ['8.8.8.8']];
@@ -192,12 +211,11 @@ class HttpFetcherTest extends TestCase
                 }
                 return $status;
             },
-            fn (): float => $this->now,
+            $clock ?? fn (): float => $this->now,
             function (float $seconds): void {
                 $this->sleeps[] = $seconds;
                 $this->now += $seconds;
-            },
-            $this->lockDirectory
+            }
         );
     }
 }
