@@ -6,12 +6,15 @@ use Kanboard\Core\Plugin\Base;
 use Kanboard\Plugin\Deed\Client\Bootstrap;
 use Kanboard\Plugin\Deed\Client\HttpFetcher;
 use Kanboard\Plugin\Deed\Client\RdapClient;
+use Kanboard\Plugin\Deed\Console\RefreshCommand;
 use Kanboard\Plugin\Deed\Model\CacheModel;
 use Kanboard\Plugin\Deed\Model\DomainModel;
 use Kanboard\Plugin\Deed\Model\RdapParser;
 use Kanboard\Plugin\Deed\Model\RefreshService;
 use Kanboard\Plugin\Deed\Model\RenewalService;
 use Kanboard\Plugin\Deed\Model\SnapshotModel;
+use Kanboard\Plugin\Deed\Trigger\WebCron;
+use Throwable;
 
 class Plugin extends Base
 {
@@ -60,6 +63,21 @@ class Plugin extends Base
                 }
             );
         };
+
+        $container = $this->container;
+        $container['cli']->add(new RefreshCommand($container));
+        $this->hook->on('template:layout:top', [
+            'template' => 'Deed:layout/webcron',
+            'callable' => static function () use ($container): array {
+                try {
+                    (new WebCron($container))->maybeRun();
+                } catch (Throwable $exception) {
+                    $container['logger']->error('Deed web-cron failed: '.$exception->getMessage());
+                }
+
+                return [];
+            },
+        ]);
     }
 
     public function getPluginName(): string
