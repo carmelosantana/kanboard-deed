@@ -7,6 +7,7 @@ use Kanboard\Plugin\Deed\Client\Bootstrap;
 use Kanboard\Plugin\Deed\Client\HttpFetcher;
 use Kanboard\Plugin\Deed\Client\RdapClient;
 use Kanboard\Plugin\Deed\Model\CacheModel;
+use Kanboard\Plugin\Deed\Model\DomainModel;
 use Kanboard\Plugin\Deed\Model\RdapParser;
 
 class Plugin extends Base
@@ -15,6 +16,7 @@ class Plugin extends Base
     {
         $version = $this->getPluginVersion();
         $this->container['deedCache'] = static fn ($container) => new CacheModel($container['db']->getConnection());
+        $this->container['deedDomainModel'] = static fn ($container) => new DomainModel($container['db']->getConnection());
         $this->container['deedHttp'] = static fn ($container) => new HttpFetcher(
             $version,
             $container['configModel']->get('application_url')
