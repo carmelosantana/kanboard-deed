@@ -3,11 +3,33 @@
 namespace Kanboard\Plugin\Deed;
 
 use Kanboard\Core\Plugin\Base;
+use Kanboard\Plugin\Deed\Client\Bootstrap;
+use Kanboard\Plugin\Deed\Client\HttpFetcher;
+use Kanboard\Plugin\Deed\Client\RdapClient;
+use Kanboard\Plugin\Deed\Model\CacheModel;
+use Kanboard\Plugin\Deed\Model\RdapParser;
 
 class Plugin extends Base
 {
     public function initialize()
     {
+        $version = $this->getPluginVersion();
+        $this->container['deedCache'] = static fn ($container) => new CacheModel($container['db']->getConnection());
+        $this->container['deedHttp'] = static fn ($container) => new HttpFetcher(
+            $version,
+            $container['configModel']->get('application_url')
+        );
+        $this->container['deedParser'] = static fn () => new RdapParser();
+        $this->container['deedBootstrap'] = static fn ($container) => new Bootstrap(
+            $container['deedHttp'],
+            $container['deedCache']
+        );
+        $this->container['deedRdap'] = static fn ($container) => new RdapClient(
+            $container['deedHttp'],
+            $container['deedBootstrap'],
+            $container['deedParser'],
+            $container['deedCache']
+        );
     }
 
     public function getPluginName(): string
