@@ -4,7 +4,6 @@ namespace Kanboard\Plugin\Deed\Controller;
 
 use InvalidArgumentException;
 use Kanboard\Controller\BaseController;
-use Kanboard\Model\TaskModel;
 use Kanboard\Plugin\Deed\Client\RdapClient;
 use Kanboard\Plugin\Deed\Model\SnapshotModel;
 
@@ -112,33 +111,42 @@ class DomainController extends BaseController
         $assignees = [0 => t('Unassigned')] + $this->userModel->getActiveUsersList();
         $currentProjectId = (int) $domain['project_id'];
         $keepProject = !isset($projects[$currentProjectId]);
+        $selection = [
+            'project_id' => $keepProject ? 'keep' : $currentProjectId,
+            'assignee_id' => $domain['assignee_id'],
+        ];
+        $error = null;
 
         if ($this->request->isPost()) {
             $selectedProject = $this->request->getRawValue('project_id');
-            $projectId = $this->readId($selectedProject);
+            $projectId = $keepProject && $selectedProject === 'keep' ? $currentProjectId : $this->readId($selectedProject);
             $assigneeId = $this->readId($this->request->getRawValue('assignee_id'));
-            if ($keepProject && $selectedProject === 'keep') {
-                $projectId = $currentProjectId;
-            } elseif ($projectId === null || !isset($projects[$projectId])) {
-                $this->response->text(t('Select an accessible project.'), 400);
+            $validProject = $projectId !== null && (isset($projects[$projectId]) || ($keepProject && $selectedProject === 'keep'));
+            $validAssignee = $assigneeId !== null && isset($assignees[$assigneeId]);
+
+            if ($validProject && $validAssignee) {
+                $this->deedDomainModel->update((int) $domain['id'], $projectId, $assigneeId);
+                $this->redirectTo('show', ['domain_id' => $domain['id']]);
                 return;
             }
-            if ($assigneeId === null || !isset($assignees[$assigneeId])) {
-                $this->response->text(t('Select an active assignee.'), 400);
-                return;
+
+            $error = $validProject ? t('Select an active assignee.') : t('Select an accessible project.');
+            if ($validProject) {
+                $selection['project_id'] = $selectedProject === 'keep' ? 'keep' : $projectId;
             }
-            $this->deedDomainModel->update((int) $domain['id'], $projectId, $assigneeId);
-            $this->redirectTo('show', ['domain_id' => $domain['id']]);
-            return;
+            if ($validAssignee) {
+                $selection['assignee_id'] = $assigneeId;
+            }
         }
 
         $this->renderPage('show', t('Edit %s', $domain['name']), [
             'domain' => $domain,
             'view' => 'edit',
             'projects' => $keepProject ? ['keep' => t('Keep current project')] + $projects : $projects,
-            'selection' => $keepProject ? array_replace($domain, ['project_id' => 'keep']) : $domain,
+            'selection' => $selection,
             'assignees' => $assignees,
-        ]);
+            'error' => $error,
+        ], $error === null ? 200 : 400);
     }
 
     public function remove(): void
@@ -202,7 +210,10 @@ class DomainController extends BaseController
             'history' => $history,
             'sources' => $this->sourceUrls($domain),
             'stale' => $this->deedRefreshService->isStale($domain),
-            'renewal' => $this->openRenewal((int) $domain['id']),
+            'renewal' => $this->deedRenewalService->openRenewalFor(
+                (int) $domain['id'],
+                fn (int $projectId): bool => $this->helper->user->hasProjectAccess('TaskViewController', 'show', $projectId)
+            ),
             'hasRenewalProject' => $hasRenewalProject,
         ]);
     }
@@ -215,34 +226,14 @@ class DomainController extends BaseController
         }
 
         // The watchlist stores the registry URL. The cached response also carries its referral.
-        $cached = $this->deedCache->get('lookup:domain:'.hash('sha256', $domain['name']));
-        $record = json_decode($cached['body'] ?? '', true);
+        $record = $this->deedRdap->cachedDomainSource($domain['name']);
         $sources = [t('Registry RDAP') => $registry];
-        if (($record['status'] ?? null) === 'ok' && ($record['rdap_url'] ?? null) === $registry
-            && ($record['referral_error'] ?? null) === null && ($record['related_url'] ?? null) !== null) {
+        if (($record['rdap_url'] ?? null) === $registry && ($record['related_url'] ?? null) !== null) {
             $sources[t('Registrar RDAP')] = $record['related_url'];
         }
 
         return array_filter($sources, static fn ($url) => is_string($url)
             && filter_var($url, FILTER_VALIDATE_URL) !== false && parse_url($url, PHP_URL_SCHEME) === 'https');
-    }
-
-    private function openRenewal(int $domainId): ?array
-    {
-        $statement = $this->db->getConnection()->prepare(
-            'SELECT tasks.id, tasks.title, tasks.project_id FROM deed_renewals
-             JOIN tasks ON tasks.id = deed_renewals.task_id
-             WHERE deed_renewals.domain_id = ? AND deed_renewals.closed_at IS NULL AND tasks.is_active = ?
-             ORDER BY deed_renewals.cycle_expires_at DESC'
-        );
-        $statement->execute([$domainId, TaskModel::STATUS_OPEN]);
-        foreach ($statement->fetchAll(\PDO::FETCH_ASSOC) as $task) {
-            if ($this->helper->user->hasProjectAccess('TaskViewController', 'show', $task['project_id'])) {
-                return $task;
-            }
-        }
-
-        return null;
     }
 
     private function redirectTo(string $action, array $params = []): void
@@ -272,11 +263,11 @@ class DomainController extends BaseController
         $this->renderPage('index', t('Domains'), compact('domains', 'projects', 'message'));
     }
 
-    private function renderPage(string $template, string $title, array $params): void
+    private function renderPage(string $template, string $title, array $params, int $status = 200): void
     {
         $this->response->html($this->helper->layout->dashboard('Deed:domain/'.$template, $params + [
             'title' => $title,
             'user' => $this->userSession->getAll(),
-        ]));
+        ]), $status);
     }
 }

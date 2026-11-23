@@ -43,6 +43,24 @@ final class RenewalService
         return $this->lastProblem;
     }
 
+    public function openRenewalFor(int $domainId, ?Closure $canAccessProject = null): ?array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT tasks.id, tasks.title, tasks.project_id FROM deed_renewals
+             JOIN tasks ON tasks.id = deed_renewals.task_id
+             WHERE deed_renewals.domain_id = ? AND deed_renewals.closed_at IS NULL AND tasks.is_active = ?
+             ORDER BY deed_renewals.cycle_expires_at DESC'
+        );
+        $statement->execute([$domainId, TaskModel::STATUS_OPEN]);
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $task) {
+            if ($canAccessProject === null || $canAccessProject((int) $task['project_id'])) {
+                return $task;
+            }
+        }
+
+        return null;
+    }
+
     public function evaluate(array $domain, int $now): void
     {
         $this->lastProblem = null;

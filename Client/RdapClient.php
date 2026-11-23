@@ -27,7 +27,22 @@ class RdapClient
     /** Watchlist refreshes can bypass the on-demand cache and repopulate it. */
     public function lookupDomain(string $domain, bool $useCache = true): array
     {
-        return $this->lookup('domain', strtolower(rtrim(trim($domain), '.')), $useCache);
+        return $this->lookup('domain', self::normaliseDomain($domain), $useCache);
+    }
+
+    /** Read the last cached sources, even after the lookup TTL, without making a request. */
+    public function cachedDomainSource(string $name): ?array
+    {
+        $cached = $this->cache->get(self::lookupKey('domain', self::normaliseDomain($name)));
+        $record = json_decode($cached['body'] ?? '', true);
+        if (($record['status'] ?? null) !== 'ok') {
+            return null;
+        }
+
+        return [
+            'rdap_url' => $record['rdap_url'] ?? null,
+            'related_url' => ($record['referral_error'] ?? null) === null ? ($record['related_url'] ?? null) : null,
+        ];
     }
 
     public function lookupIp(string $ip): array
@@ -59,9 +74,19 @@ class RdapClient
         return min($registryExpiresAt, $registrarExpiresAt);
     }
 
+    private static function normaliseDomain(string $domain): string
+    {
+        return strtolower(rtrim(trim($domain), '.'));
+    }
+
+    private static function lookupKey(string $kind, string $query): string
+    {
+        return 'lookup:'.$kind.':'.hash('sha256', $query);
+    }
+
     private function lookup(string $kind, string $query, bool $useCache = true): array
     {
-        $key = 'lookup:'.$kind.':'.hash('sha256', $query);
+        $key = self::lookupKey($kind, $query);
         $cached = $this->cache->get($key);
         if ($useCache && $cached !== null && $cached['expires_at'] > ($this->clock)()) {
             $result = json_decode($cached['body'], true);

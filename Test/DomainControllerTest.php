@@ -141,15 +141,20 @@ class DomainControllerTest extends Base
             'UPDATE deed_domains SET registry_expires_at = ?, last_success_at = ?, last_checked_at = ? WHERE id = ?'
         );
         $now = strtotime('today UTC');
+        $ids = [];
         foreach ([7 => 'red.com', 8 => 'amber-low.com', 30 => 'amber-high.com', 31 => 'neutral.com'] as $days => $name) {
-            $id = $domains->create($name, 1);
+            $ids[$name] = $domains->create($name, 1);
             $success = $days === 7 ? $now - 4 * 86400 : time();
-            $statement->execute([$now + $days * 86400, $success, time(), $id]);
+            $statement->execute([$now + $days * 86400, $success, time(), $ids[$name]]);
         }
 
         [$status, $body] = $this->dispatch('deed/domains', Role::APP_MANAGER);
 
         $this->assertSame(200, $status);
+        $link = $this->container['helper']->url->link('red.com', 'DomainController', 'show', [
+            'plugin' => 'Deed', 'domain_id' => $ids['red.com'],
+        ]);
+        $this->assertStringContainsString($link, $body);
         $this->assertMatchesRegularExpression('~red\.com(?:(?!</tr>).)*deed-badge--red(?:(?!</tr>).)*deed-stale~s', $body);
         foreach (['amber-low', 'amber-high'] as $name) {
             $this->assertMatchesRegularExpression('~'.$name.'\.com(?:(?!</tr>).)*deed-badge--amber~s', $body);

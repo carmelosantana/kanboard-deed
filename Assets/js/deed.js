@@ -1,31 +1,16 @@
 (function () {
     'use strict';
 
-    // Use the watchlist's refresh forms to locate each domain and preserve Kanboard's URL mode.
-    document.querySelectorAll('.deed-domains form[data-deed-refresh]').forEach(function (form) {
-        var domainId = form.elements.namedItem('domain_id').value;
-        var heading = form.closest('tr').querySelector('th[scope="row"]');
-        var url = new URL(form.action);
-        if (url.searchParams.has('action')) {
-            url.searchParams.set('action', 'show');
-            url.searchParams.set('domain_id', domainId);
-        } else {
-            url.pathname = url.pathname.replace(/\/refresh$/, '/show/' + encodeURIComponent(domainId));
-        }
-
-        var link = document.createElement('a');
-        link.href = url.href;
-        link.textContent = heading.textContent;
-        heading.replaceChildren(link);
-    });
-
     document.addEventListener('click', function (event) {
-        var link = event.target.closest('a[data-deed-dns]');
+        var link = event.target?.closest?.('a[data-deed-dns]');
         if (!link || event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
             return;
         }
 
         var results = document.getElementById(link.getAttribute('aria-controls'));
+        if (!results) {
+            return;
+        }
         event.preventDefault();
         if (results.getAttribute('aria-busy') === 'true') {
             return;

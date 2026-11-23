@@ -13,12 +13,15 @@ $domainRoute = ['plugin' => 'Deed', 'domain_id' => $domain['id']];
 </div>
 
 <?php if ($view === 'edit'): ?>
+    <?php if ($error !== null): ?>
+        <p class="alert alert-error" role="alert"><?= $this->text->e($error) ?></p>
+    <?php endif ?>
     <form method="post" action="<?= $this->url->href('DomainController', 'edit', $domainRoute) ?>">
         <?= $this->form->csrf() ?>
         <?= $this->form->label(t('Project'), 'project_id') ?>
         <?= $this->form->select('project_id', $projects, $selection) ?>
         <?= $this->form->label(t('Assignee'), 'assignee_id') ?>
-        <?= $this->form->select('assignee_id', $assignees, $domain) ?>
+        <?= $this->form->select('assignee_id', $assignees, $selection) ?>
         <div class="form-actions">
             <button type="submit" class="btn btn-blue"><?= t('Save') ?></button>
             <?= $this->url->link(t('Cancel'), 'DomainController', 'show', $domainRoute) ?>

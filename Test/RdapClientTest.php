@@ -96,12 +96,30 @@ class RdapClientTest extends Base
         ]);
 
         $result = $client->lookupDomain(self::DOMAIN);
+        $this->assertSame(['rdap_url' => self::REGISTRY.self::DOMAIN, 'related_url' => null], $client->cachedDomainSource(self::DOMAIN));
 
         $this->assertSame('ok', $result['status']);
         $this->assertSame(1817048627, $result['registry_expires_at']);
         $this->assertNull($result['registrar_expires_at']);
         $this->assertSame('Porkbun LLC', $result['registrar']);
         $this->assertSame($error, $result['referral_error']);
+    }
+
+    public function testReadsDomainSourcesFromCacheWithoutRefreshingExpiredEntries(): void
+    {
+        $this->assertNull($this->clientExpecting([])->cachedDomainSource(self::DOMAIN));
+        $client = $this->clientExpecting([
+            [self::IANA.'dns.json', $this->response('iana-dns.json')],
+            [self::REGISTRY.self::DOMAIN, $this->response('verisign-com.json')],
+            [self::REFERRAL, $this->response('porkbun-referral.json')],
+        ]);
+        $client->lookupDomain(self::DOMAIN);
+        $this->now += 86401;
+
+        $this->assertSame([
+            'rdap_url' => self::REGISTRY.self::DOMAIN,
+            'related_url' => self::REFERRAL,
+        ], $this->clientExpecting([])->cachedDomainSource(' MadeInNewburgh.COM. '));
     }
 
     public static function referralFailures(): iterable

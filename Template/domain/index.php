@@ -36,7 +36,7 @@
             <tbody>
                 <?php foreach ($domains as $domain): ?>
                     <tr>
-                        <th scope="row"><?= $this->text->e($domain['name']) ?></th>
+                        <th scope="row"><?= $this->url->link($this->text->e($domain['name']), 'DomainController', 'show', ['plugin' => 'Deed', 'domain_id' => $domain['id']]) ?></th>
                         <td><?= $this->text->e($domain['registrar'] ?? '—') ?></td>
                         <td>
                             <?php if ($domain['expiry'] === null): ?>

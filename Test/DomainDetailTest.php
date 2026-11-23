@@ -121,8 +121,19 @@ class DomainDetailTest extends Base
         $this->assertSame(403, $this->dispatch('edit', [
             'project_id' => $allowed, 'assignee_id' => $assignee, 'csrf_token' => 'invalid',
         ])[0]);
-        [$status] = $this->dispatch('edit', ['project_id' => $denied, 'assignee_id' => $assignee]);
+        [$status, $body] = $this->dispatch('edit', ['project_id' => $denied, 'assignee_id' => $assignee]);
         $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an accessible project.', $body);
+        $this->assertStringContainsString('method="post"', $body);
+        $this->assertStringNotContainsString('Hidden Project', $body);
+        $this->assertMatchesRegularExpression('/<option value="'.$assignee.'"[^>]*selected[^>]*>renewal-owner<\/option>/', $body);
+        $this->assertSame(0, (int) $domains->get($this->domainId)['project_id']);
+
+        [$status, $body] = $this->dispatch('edit', ['project_id' => $allowed, 'assignee_id' => 999999]);
+        $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an active assignee.', $body);
+        $this->assertStringContainsString('method="post"', $body);
+        $this->assertMatchesRegularExpression('/<option value="'.$allowed.'"[^>]*selected[^>]*>Accessible Project<\/option>/', $body);
         $this->assertSame(0, (int) $domains->get($this->domainId)['project_id']);
 
         [$status] = $this->dispatch('edit', ['project_id' => $allowed, 'assignee_id' => $assignee]);

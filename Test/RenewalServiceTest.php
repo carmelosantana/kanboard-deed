@@ -85,6 +85,32 @@ class RenewalServiceTest extends Base
         $this->assertSame(['Expires in 14 days.'], $this->comments($taskId));
     }
 
+    public function testFindsTheNewestOpenRenewalMatchingTheProjectFilter(): void
+    {
+        $domainId = (int) $this->watch($this->project)['id'];
+        $this->assertNull($this->renewals->openRenewalFor($domainId));
+
+        $tasks = $this->container['taskCreationModel'];
+        $otherProject = $this->container['projectModel']->create(['name' => 'Other Project']);
+        $older = $tasks->create(['title' => 'Older renewal', 'project_id' => $this->project]);
+        $newer = $tasks->create(['title' => 'Newer renewal', 'project_id' => $otherProject]);
+        $closed = $tasks->create(['title' => 'Closed renewal', 'project_id' => $this->project]);
+        $superseded = $tasks->create(['title' => 'Superseded renewal', 'project_id' => $this->project]);
+        $this->container['taskStatusModel']->close($closed);
+        $insert = $this->pdo->prepare(
+            'INSERT INTO deed_renewals (domain_id, cycle_expires_at, task_id, thresholds_sent, closed_at) VALUES (?, ?, ?, ?, ?)'
+        );
+        $insert->execute([$domainId, $this->expiry, $older, '[]', null]);
+        $insert->execute([$domainId, $this->expiry + self::DAY, $newer, '[]', null]);
+        $insert->execute([$domainId, $this->expiry + 2 * self::DAY, $closed, '[]', null]);
+        $insert->execute([$domainId, $this->expiry + 3 * self::DAY, $superseded, '[]', $this->expiry]);
+
+        $this->assertEquals($newer, $this->renewals->openRenewalFor($domainId)['id']);
+        $visible = $this->renewals->openRenewalFor($domainId, fn (int $id): bool => $id === $this->project);
+        $this->assertEquals($older, $visible['id']);
+        $this->assertNull($this->renewals->openRenewalFor($domainId, static fn (): bool => false));
+    }
+
     public function testLaterExpiryClosesOldCycleAndWaitsForNewThreshold(): void
     {
         $domain = $this->watch($this->project);
