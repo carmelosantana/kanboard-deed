@@ -10,6 +10,7 @@ use Kanboard\Plugin\Deed\Model\CacheModel;
 use Kanboard\Plugin\Deed\Model\DomainModel;
 use Kanboard\Plugin\Deed\Model\RdapParser;
 use Kanboard\Plugin\Deed\Model\RefreshService;
+use Kanboard\Plugin\Deed\Model\RenewalService;
 use Kanboard\Plugin\Deed\Model\SnapshotModel;
 
 class Plugin extends Base
@@ -37,6 +38,14 @@ class Plugin extends Base
         $this->container['deedSnapshotModel'] = static fn ($container) => new SnapshotModel(
             $container['db']->getConnection()
         );
+        $this->container['deedRenewalService'] = static fn ($container) => new RenewalService(
+            $container['db']->getConnection(),
+            $container['configModel'],
+            $container['projectModel'],
+            $container['taskCreationModel'],
+            $container['taskStatusModel'],
+            $container['commentModel']
+        );
         $this->container['deedRefreshService'] = static function ($container): RefreshService {
             $batchSize = (int) $container['configModel']->get('deed_batch_size', 25);
 
@@ -47,9 +56,7 @@ class Plugin extends Base
                 $container['deedRdap'],
                 $batchSize < 1 ? 25 : min($batchSize, 200),
                 static function (array $domain, int $now) use ($container): void {
-                    if (isset($container['deedRenewalService'])) {
-                        $container['deedRenewalService']->evaluate($domain, $now);
-                    }
+                    $container['deedRenewalService']->evaluate($domain, $now);
                 }
             );
         };
