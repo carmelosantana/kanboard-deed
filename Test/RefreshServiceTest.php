@@ -3,6 +3,7 @@
 namespace Kanboard\Plugin\Deed\Test;
 
 use Closure;
+use Kanboard\Plugin\Deed\Client\HttpResponse;
 use Kanboard\Plugin\Deed\Client\RdapClient;
 use Kanboard\Plugin\Deed\Model\DomainModel;
 use Kanboard\Plugin\Deed\Model\RefreshService;
@@ -11,6 +12,7 @@ use Kanboard\Plugin\Deed\Plugin;
 use KanboardTests\units\Base;
 use PDO;
 use PDOException;
+use RuntimeException;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
@@ -56,14 +58,14 @@ class RefreshServiceTest extends Base
             {
                 $this->lookups[] = [$domain, $useCache];
                 $result = $this->result;
-                ($this->duringLookup ?? static fn () => null)();
+                ($this->duringLookup ?? static fn () => null)($domain);
 
                 return $result;
             }
         };
     }
 
-    private function service(int $batchSize = 25): RefreshService
+    private function service(int $batchSize = 25, ?Closure $evaluateRenewal = null): RefreshService
     {
         $this->snapshots = new SnapshotModel($this->pdo);
 
@@ -73,7 +75,7 @@ class RefreshServiceTest extends Base
             $this->snapshots,
             $this->rdap,
             $batchSize,
-            function (array $domain, int $now): void {
+            $evaluateRenewal ?? function (array $domain, int $now): void {
                 $this->renewals[] = [$domain, $now];
             },
             fn () => $this->now
@@ -136,12 +138,12 @@ class RefreshServiceTest extends Base
             'statuses', 'nameservers', 'rdap_url', 'fingerprint', 'last_success_at',
         ]);
 
-        foreach ([3600, 21600, self::DAY, self::DAY, 2 * self::DAY] as $index => $backoff) {
+        foreach ([7200, 21600, self::DAY, self::DAY] as $index => $backoff) {
             $this->now += 60;
             $this->rdap->result = [
                 'status' => 'error',
                 'error' => 'http_429',
-                'retry_after' => $index === 4 ? $backoff : 30,
+                'retry_after' => $index === 0 ? 7200 : 30,
                 'rdap_url' => 'https://other.example.com/domain/example.com',
                 'registry_expires_at' => null,
             ];
@@ -169,6 +171,41 @@ class RefreshServiceTest extends Base
         $this->assertNull($record['last_error']);
         $this->assertFalse($service->isStale($record));
         $this->assertCount(1, $this->snapshots->listForDomain($id));
+    }
+
+    /** @dataProvider longRetryAfterHeaders */
+    public function testLongRetryAfterIsCappedAtOneDay(string $header): void
+    {
+        $service = $this->service();
+        $id = $this->domains->create('example.com', 1);
+        $response = new HttpResponse(429, '', ['Retry-After' => $header], $this->now);
+        $delay = $response->retryAfter();
+        $this->assertGreaterThan(self::DAY, $delay);
+        $this->rdap->result = ['status' => 'error', 'error' => 'http_429', 'retry_after' => $delay];
+
+        $service->refresh($id);
+
+        $this->assertSame($this->now + self::DAY, (int) $this->domains->get($id)['next_check_at']);
+    }
+
+    public static function longRetryAfterHeaders(): iterable
+    {
+        yield 'seconds' => ['999999999999999999999'];
+        yield 'HTTP-date' => ['Tue, 01 Jan 2030 00:00:00 GMT'];
+    }
+
+    public function testDomainWithNoSuccessfulRefreshBecomesStaleThreeDaysAfterCreation(): void
+    {
+        $id = $this->domains->create('example.com', 1);
+        $service = $this->service();
+        $this->rdap->result = ['status' => 'error', 'error' => 'timeout'];
+
+        $this->now += 3 * self::DAY;
+        $record = $service->refresh($id);
+        $this->assertNull($record['last_success_at']);
+        $this->assertFalse($service->isStale($record));
+        ++$this->now;
+        $this->assertTrue($service->isStale($record));
     }
 
     public function testIncompleteSuccessKeepsKnownValuesAndNotesReferralError(): void
@@ -268,6 +305,43 @@ class RefreshServiceTest extends Base
         }
     }
 
+    /** @dataProvider sweepExceptionStages */
+    public function testSweepSchedulesRetryAndContinuesAfterADomainThrows(string $stage): void
+    {
+        $first = $this->domains->create('first.com', 1);
+        $service = $this->service(evaluateRenewal: function (array $record) use ($stage): void {
+            $this->renewals[] = $record['name'];
+            if ($stage === 'renewal' && $record['name'] === 'first.com') {
+                throw new RuntimeException('renewal failed');
+            }
+        });
+        $this->rdap->result = self::RECORD;
+        if ($stage === 'lookup') {
+            $this->rdap->duringLookup = static function (string $domain): void {
+                if ($domain === 'first.com') {
+                    throw new RuntimeException('lookup failed');
+                }
+            };
+        }
+        ++$this->now;
+        $second = $this->domains->create('second.com', 1);
+
+        $this->assertSame(['refreshed' => 1, 'failed' => 1, 'skipped' => 0], $service->sweep());
+        $record = $this->domains->get($first);
+        $this->assertSame('error', $record['status']);
+        $this->assertSame($stage.' failed', $record['last_error']);
+        $this->assertSame(1, (int) $record['fail_count']);
+        $this->assertSame($this->now + 3600, (int) $record['next_check_at']);
+        $this->assertSame('ok', $this->domains->get($second)['status']);
+        $this->assertSame(['first.com', 'second.com'], $this->renewals);
+    }
+
+    public static function sweepExceptionStages(): iterable
+    {
+        yield 'lookup' => ['lookup'];
+        yield 'renewal evaluation' => ['renewal'];
+    }
+
     public function testInFlightLookupDoesNotOverwriteAnotherRefresh(): void
     {
         $id = $this->domains->create('example.com', 1);
@@ -295,6 +369,47 @@ class RefreshServiceTest extends Base
             ['registrar' => 'Old Registrar', 'nameservers' => ['ns1.example.com']],
             ['registry_expires_at' => 1800000000, 'nameservers' => ['ns1.example.com']]
         ));
+    }
+
+    public function testInFlightLookupKeepsUnrelatedUpdatesWithoutSkippingRefresh(): void
+    {
+        $id = $this->domains->create('example.com', 1);
+        $service = $this->service();
+        $this->rdap->result = self::RECORD;
+        $this->rdap->duringLookup = function () use ($id): void {
+            $this->pdo->prepare('UPDATE deed_domains SET created_by = ? WHERE id = ?')->execute([2, $id]);
+        };
+
+        $record = $service->refresh($id);
+
+        $this->assertSame('ok', $record['status'] ?? null);
+        $this->assertSame(2, (int) $record['created_by']);
+        $this->assertSame(2, (int) $this->domains->get($id)['created_by']);
+    }
+
+    /** @dataProvider batchSizeSettings */
+    public function testPluginNormalizesBatchSize(?string $setting, int $expected): void
+    {
+        (new Plugin($this->container))->initialize();
+        if ($setting !== null) {
+            $this->container['configModel']->save(['deed_batch_size' => $setting]);
+        }
+        $this->container['deedRdap'] = $this->rdap;
+        $this->rdap->result = self::RECORD;
+        for ($i = 0; $i <= $expected; ++$i) {
+            $this->domains->create('domain-'.$i.'.com', 1);
+        }
+
+        $this->assertSame($expected, $this->container['deedRefreshService']->sweep()['refreshed']);
+    }
+
+    public static function batchSizeSettings(): iterable
+    {
+        yield 'unset' => [null, 25];
+        yield 'empty' => ['', 25];
+        yield 'zero' => ['0', 25];
+        yield 'negative' => ['-5', 25];
+        yield 'over the maximum' => ['250', 200];
     }
 
     public function testPluginWiresRefreshServiceWithConfiguredBatchSizeAndRenewalEvaluator(): void

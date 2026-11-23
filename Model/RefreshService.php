@@ -29,15 +29,23 @@ final class RefreshService
 
     public function isStale(array $domain): bool
     {
-        $lastSuccess = $domain['last_success_at'] ?? null;
+        $since = $domain['last_success_at'] ?? $domain['created_at'] ?? null;
 
-        return $lastSuccess !== null && $lastSuccess < ($this->clock)() - 3 * self::DAY;
+        return $since !== null && $since < ($this->clock)() - 3 * self::DAY;
     }
 
     /** Return the updated domain, or null if the refresh could no longer be applied. */
     public function refresh(int $domainId): ?array
     {
-        return $this->refreshDomain($domainId);
+        $domain = $this->domains->get($domainId);
+        if ($domain === null) {
+            return null;
+        }
+
+        $updated = $this->refreshDomain($domain);
+        $this->evaluateRenewal($updated);
+
+        return $updated;
     }
 
     /** @return array{refreshed: int, failed: int, skipped: int} */
@@ -58,8 +66,14 @@ final class RefreshService
         $statement->execute();
 
         foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $id) {
-            $domain = $this->refreshDomain((int) $id, $now);
-            ++$counts[match ($domain['status'] ?? null) {
+            try {
+                $status = $this->sweepDomain((int) $id, $now);
+            } catch (Throwable $exception) {
+                error_log("Deed sweep failed for domain {$id}: ".$exception->getMessage());
+                $status = 'error';
+            }
+
+            ++$counts[match ($status) {
                 'ok', 'not_found' => 'refreshed',
                 'error' => 'failed',
                 default => 'skipped',
@@ -69,22 +83,50 @@ final class RefreshService
         return $counts;
     }
 
-    private function refreshDomain(int $domainId, ?int $dueAt = null): ?array
+    private function sweepDomain(int $domainId, int $dueAt): ?string
     {
         $domain = $this->domains->get($domainId);
-        if ($domain === null || ($dueAt !== null && $domain['next_check_at'] > $dueAt)) {
+        if ($domain === null || $domain['next_check_at'] > $dueAt) {
             return null;
         }
 
-        $result = $this->rdap->lookupDomain($domain['name'], false);
-        $now = ($this->clock)();
+        $updated = null;
+        try {
+            $updated = $this->refreshDomain($domain);
+            $this->evaluateRenewal($updated);
 
+            return $updated['status'] ?? null;
+        } catch (Throwable $exception) {
+            // A lookup error already has a retry scheduled if renewal evaluation also failed.
+            if (($updated['status'] ?? null) === 'error') {
+                throw $exception;
+            }
+
+            $failed = $this->storeResult($updated ?? $domain, [
+                'status' => 'error',
+                'error' => $exception->getMessage() ?: $exception::class,
+            ], ($this->clock)());
+            if ($updated === null) {
+                $this->evaluateRenewal($failed);
+            }
+
+            return 'error';
+        }
+    }
+
+    private function refreshDomain(array $domain): ?array
+    {
+        $result = $this->rdap->lookupDomain($domain['name'], false);
+
+        return $this->storeResult($domain, $result, ($this->clock)());
+    }
+
+    private function storeResult(array $domain, array $result, int $now): ?array
+    {
         $this->pdo->beginTransaction();
         try {
-            $current = $this->lockDomain($domainId);
-            // Preserve edits to the assignee and project made during the lookup.
-            $editable = ['project_id' => true, 'assignee_id' => true];
-            if ($current === null || array_diff_key($current, $editable) !== array_diff_key($domain, $editable)) {
+            $current = $this->lockDomain((int) $domain['id']);
+            if ($current === null || (string) $current['last_checked_at'] !== (string) $domain['last_checked_at']) {
                 $this->pdo->commit();
                 return null;
             }
@@ -98,11 +140,14 @@ final class RefreshService
             throw $exception;
         }
 
-        if ($this->evaluateRenewal !== null) {
-            ($this->evaluateRenewal)($updated, $now);
-        }
-
         return $updated;
+    }
+
+    private function evaluateRenewal(?array $domain): void
+    {
+        if ($domain !== null && $this->evaluateRenewal !== null) {
+            ($this->evaluateRenewal)($domain, (int) $domain['last_checked_at']);
+        }
     }
 
     private function lockDomain(int $id): ?array
@@ -125,7 +170,10 @@ final class RefreshService
         $status = $result['status'];
         $failCount = $status === 'error' ? $domain['fail_count'] + 1 : 0;
         $delay = match ($status) {
-            'error' => max(self::BACKOFF[min($failCount, count(self::BACKOFF)) - 1], $result['retry_after'] ?? 0),
+            'error' => min(self::DAY, max(
+                self::BACKOFF[min($failCount, count(self::BACKOFF)) - 1],
+                $result['retry_after'] ?? 0
+            )),
             'unsupported' => 7 * self::DAY,
             default => self::DAY,
         };

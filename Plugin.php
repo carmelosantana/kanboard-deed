@@ -37,18 +37,22 @@ class Plugin extends Base
         $this->container['deedSnapshotModel'] = static fn ($container) => new SnapshotModel(
             $container['db']->getConnection()
         );
-        $this->container['deedRefreshService'] = static fn ($container) => new RefreshService(
-            $container['db']->getConnection(),
-            $container['deedDomainModel'],
-            $container['deedSnapshotModel'],
-            $container['deedRdap'],
-            (int) $container['configModel']->get('deed_batch_size', 25),
-            static function (array $domain, int $now) use ($container): void {
-                if (isset($container['deedRenewalService'])) {
-                    $container['deedRenewalService']->evaluate($domain, $now);
+        $this->container['deedRefreshService'] = static function ($container): RefreshService {
+            $batchSize = (int) $container['configModel']->get('deed_batch_size', 25);
+
+            return new RefreshService(
+                $container['db']->getConnection(),
+                $container['deedDomainModel'],
+                $container['deedSnapshotModel'],
+                $container['deedRdap'],
+                $batchSize < 1 ? 25 : min($batchSize, 200),
+                static function (array $domain, int $now) use ($container): void {
+                    if (isset($container['deedRenewalService'])) {
+                        $container['deedRenewalService']->evaluate($domain, $now);
+                    }
                 }
-            }
-        );
+            );
+        };
     }
 
     public function getPluginName(): string
