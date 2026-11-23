@@ -3,6 +3,7 @@
 namespace Kanboard\Plugin\Deed;
 
 use Kanboard\Core\Plugin\Base;
+use Kanboard\Core\Security\Role;
 use Kanboard\Plugin\Deed\Client\Bootstrap;
 use Kanboard\Plugin\Deed\Client\HttpFetcher;
 use Kanboard\Plugin\Deed\Client\RdapClient;
@@ -66,6 +67,21 @@ class Plugin extends Base
 
         $container = $this->container;
         $container['cli']->add(new RefreshCommand($container));
+        $domainActions = [
+            'index' => 'deed/domains',
+            'add' => 'deed/domains/add',
+            'bulk' => 'deed/domains/bulk',
+            'refresh' => 'deed/domains/refresh',
+        ];
+        foreach ($domainActions as $action => $path) {
+            $this->route->addRoute($path, 'DomainController', $action, 'Deed');
+        }
+        $this->applicationAccessMap->add('DomainController', array_keys($domainActions), Role::APP_MANAGER);
+
+        $this->hook->on('template:dashboard:sidebar', ['template' => 'Deed:nav/dashboard_sidebar']);
+        $this->hook->on('template:header:dropdown', ['template' => 'Deed:nav/user_dropdown']);
+        $this->hook->on('template:layout:css', ['template' => 'plugins/Deed/Assets/css/deed.css']);
+        $this->hook->on('template:layout:js', ['template' => 'plugins/Deed/Assets/js/deed.js']);
         $this->hook->on('template:layout:top', [
             'template' => 'Deed:layout/webcron',
             'callable' => static function () use ($container): array {

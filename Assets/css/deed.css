@@ -1,0 +1,28 @@
+.deed-badge {
+    display: inline-block;
+    padding: 0.1em 0.5em;
+    border: 1px solid;
+    border-radius: 0.5em;
+    font-size: 0.875em;
+    white-space: nowrap;
+}
+
+.deed-badge--red {
+    color: var(--destructive, var(--alert-color-error));
+}
+
+.deed-badge--amber,
+.deed-stale {
+    color: var(--kbx-warning, inherit);
+}
+
+.deed-bulk-result {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em 1.5em;
+    list-style: none;
+}
+
+.deed-domains button {
+    white-space: nowrap;
+}
