@@ -235,6 +235,37 @@ class RefreshServiceTest extends Base
         $this->assertCount(2, $this->snapshots->listForDomain($id));
     }
 
+    /** @dataProvider successfulResultsWithoutRegistrarExpiry */
+    public function testSuccessfulLookupWithoutRegistrarExpiryClearsOldValue(array $result): void
+    {
+        $id = $this->domains->create('example.com', 1);
+        $service = $this->service();
+        $this->rdap->result = self::RECORD;
+        $service->refresh($id);
+
+        $this->now += self::DAY;
+        $this->rdap->result = $result;
+        $service->refresh($id);
+
+        $record = $this->domains->get($id);
+        $this->assertNull($record['registrar_expires_at']);
+        $this->assertSame(self::RECORD['registry_expires_at'], (int) $record['registry_expires_at']);
+        $this->assertNull($this->renewals[1][0]['registrar_expires_at']);
+        $history = $this->snapshots->listForDomain($id);
+        $this->assertCount(2, $history);
+        $this->assertSame([
+            'registrar_expires_at' => ['before' => self::RECORD['registrar_expires_at'], 'after' => null],
+        ], SnapshotModel::diff($history[1]['data'], $history[0]['data']));
+    }
+
+    public static function successfulResultsWithoutRegistrarExpiry(): iterable
+    {
+        $record = array_replace(self::RECORD, ['registrar_expires_at' => null, 'referral_error' => null]);
+        yield 'successful referral' => [$record + ['related_url' => 'https://rdap.example.net/domain/example.com']];
+        unset($record['registrar_expires_at']);
+        yield 'no referral' => [$record];
+    }
+
     public function testNotFoundAndUnsupportedKeepKnownExpiryAndHistory(): void
     {
         $id = $this->domains->create('example.com', 1);
@@ -285,6 +316,26 @@ class RefreshServiceTest extends Base
         $this->assertSame(['due-now.com', false], $this->rdap->lookups[3]);
         $this->assertCount(4, $this->rdap->lookups);
         $this->assertCount(4, $this->renewals);
+    }
+
+    public function testSweepSkipsDueBatchWhenBootstrapIsUnavailable(): void
+    {
+        $first = $this->domains->create('first.com', 1);
+        $service = $this->service(2);
+        $this->rdap->result = ['status' => 'error', 'error' => 'timeout'];
+        $service->refresh($first);
+        $this->now += 3600;
+        $second = $this->domains->create('second.net', 1);
+        $third = $this->domains->create('third.org', 1);
+        $before = array_map($this->domains->get(...), [$first, $second, $third]);
+        $this->renewals = [];
+        $this->rdap->lookups = [];
+        $this->rdap->result = ['status' => 'error', 'error' => 'bootstrap_unavailable'];
+
+        $this->assertSame(['refreshed' => 0, 'failed' => 0, 'skipped' => 2], $service->sweep());
+        $this->assertSame([['first.com', false]], $this->rdap->lookups);
+        $this->assertSame([], $this->renewals);
+        $this->assertSame($before, array_map($this->domains->get(...), [$first, $second, $third]));
     }
 
     public function testSnapshotFailureRollsBackRecordUpdate(): void

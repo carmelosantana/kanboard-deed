@@ -11,6 +11,7 @@ final class RefreshService
 {
     private const DAY = 86400;
     private const BACKOFF = [3600, 21600, self::DAY];
+    private const BOOTSTRAP_UNAVAILABLE = 'bootstrap_unavailable';
 
     private readonly Closure $clock;
 
@@ -42,7 +43,8 @@ final class RefreshService
             return null;
         }
 
-        $updated = $this->refreshDomain($domain);
+        $result = $this->rdap->lookupDomain($domain['name'], false);
+        $updated = $this->storeResult($domain, $result, ($this->clock)());
         $this->evaluateRenewal($updated);
 
         return $updated;
@@ -65,12 +67,18 @@ final class RefreshService
         $statement->bindValue(2, $limit, PDO::PARAM_INT);
         $statement->execute();
 
-        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $id) {
+        $ids = $statement->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($ids as $index => $id) {
             try {
                 $status = $this->sweepDomain((int) $id, $now);
             } catch (Throwable $exception) {
                 error_log("Deed sweep failed for domain {$id}: ".$exception->getMessage());
                 $status = 'error';
+            }
+
+            if ($status === self::BOOTSTRAP_UNAVAILABLE) {
+                $counts['skipped'] += count($ids) - $index;
+                break;
             }
 
             ++$counts[match ($status) {
@@ -92,7 +100,12 @@ final class RefreshService
 
         $updated = null;
         try {
-            $updated = $this->refreshDomain($domain);
+            $result = $this->rdap->lookupDomain($domain['name'], false);
+            if (($result['error'] ?? null) === self::BOOTSTRAP_UNAVAILABLE) {
+                return self::BOOTSTRAP_UNAVAILABLE;
+            }
+
+            $updated = $this->storeResult($domain, $result, ($this->clock)());
             $this->evaluateRenewal($updated);
 
             return $updated['status'] ?? null;
@@ -112,13 +125,6 @@ final class RefreshService
 
             return 'error';
         }
-    }
-
-    private function refreshDomain(array $domain): ?array
-    {
-        $result = $this->rdap->lookupDomain($domain['name'], false);
-
-        return $this->storeResult($domain, $result, ($this->clock)());
     }
 
     private function storeResult(array $domain, array $result, int $now): ?array
@@ -219,8 +225,12 @@ final class RefreshService
     private function trackedFields(array $domain, array $result): array
     {
         $fields = ['registrar' => $result['registrar'] ?? $domain['registrar']];
-        foreach (['registry_expires_at', 'registrar_expires_at'] as $field) {
-            $value = $result[$field] ?? $domain[$field];
+        $expiries = [
+            'registry_expires_at' => $result['registry_expires_at'] ?? $domain['registry_expires_at'],
+            'registrar_expires_at' => $result['registrar_expires_at']
+                ?? (isset($result['referral_error']) ? $domain['registrar_expires_at'] : null),
+        ];
+        foreach ($expiries as $field => $value) {
             $fields[$field] = $value === null ? null : (int) $value;
         }
 
