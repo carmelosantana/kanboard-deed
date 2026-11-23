@@ -8,7 +8,10 @@ use Kanboard\Plugin\Deed\Client\HttpResponse;
 use Kanboard\Plugin\Deed\Model\CacheModel;
 use KanboardTests\units\Base;
 use PDO;
+use PDOStatement;
 use RuntimeException;
+use Throwable;
+use TypeError;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
@@ -32,9 +35,10 @@ class BootstrapTest extends Base
         version_1($this->pdo);
     }
 
-    public function testDomainUsesLongestLabelSuffixAndIgnoresUnknownTld(): void
+    /** @dataProvider serviceOrders */
+    public function testDomainUsesLongestLabelSuffixAndIgnoresUnknownTld(bool $specificFirst): void
     {
-        $body = $this->fixture('dns', [[['co.uk'], ['https://rdap.example/co.uk/']]]);
+        $body = $this->fixture('dns', [[['co.uk'], ['https://rdap.example/co.uk/']]], $specificFirst);
 
         $bootstrap = $this->bootstrapExpecting('dns', new HttpResponse(200, $body));
 
@@ -44,12 +48,13 @@ class BootstrapTest extends Base
         $this->assertSame($this->now + 86400, (int) $this->dnsRow()['expires_at']);
     }
 
-    public function testIpv4UsesLongestPrefix(): void
+    /** @dataProvider serviceOrders */
+    public function testIpv4UsesLongestPrefix(bool $specificFirst): void
     {
         $body = $this->fixture('ipv4', [
             [['8.8.8.128/25'], ['https://rdap.example/upper/']],
             [['8.8.8.0/25'], ['https://rdap.example/lower/']],
-        ]);
+        ], $specificFirst);
 
         $bootstrap = $this->bootstrapExpecting('ipv4', new HttpResponse(200, $body));
 
@@ -57,14 +62,21 @@ class BootstrapTest extends Base
         $this->assertSame(['https://rdap.arin.net/registry/'], $bootstrap->baseUrlsForIp('8.9.0.1'));
     }
 
-    public function testIpv6UsesLongestPrefix(): void
+    /** @dataProvider serviceOrders */
+    public function testIpv6UsesLongestPrefix(bool $specificFirst): void
     {
-        $body = $this->fixture('ipv6', [[['2001:4210::/28'], ['https://rdap.example/v6/']]]);
+        $body = $this->fixture('ipv6', [[['2001:4210::/28'], ['https://rdap.example/v6/']]], $specificFirst);
 
         $bootstrap = $this->bootstrapExpecting('ipv6', new HttpResponse(200, $body));
 
         $this->assertSame(['https://rdap.example/v6/'], $bootstrap->baseUrlsForIp('2001:4218::1'));
         $this->assertSame(['https://rdap.afrinic.net/rdap/'], $bootstrap->baseUrlsForIp('2001:4208::1'));
+    }
+
+    public static function serviceOrders(): iterable
+    {
+        yield 'specific first' => [true];
+        yield 'specific last' => [false];
     }
 
     public function testAsnUsesContainingRangeAndSupportsSingleton(): void
@@ -106,21 +118,57 @@ class BootstrapTest extends Base
         $this->assertSame($this->now + 86400, (int) $row['expires_at']);
     }
 
-    /** @dataProvider failedResponses */
-    public function testFailedRefreshKeepsEntireLastGoodRow(HttpResponse|RuntimeException $result): void
+    public function testLookupsReuseDecodedServicesFromOneCacheRead(): void
     {
         $this->primeDnsCache();
         $row = $this->dnsRow();
-        $bootstrap = $this->bootstrapExpecting('dns', $result, self::VALIDATORS);
+        $row['expires_at'] = $this->now + 60;
+        $statement = $this->createMock(PDOStatement::class);
+        $statement->expects($this->once())->method('execute')->with(['bootstrap:dns'])->willReturn(true);
+        $statement->expects($this->once())->method('fetch')->with(PDO::FETCH_ASSOC)->willReturn($row);
+        $pdo = $this->createMock(PDO::class);
+        $pdo->expects($this->once())->method('prepare')->willReturn($statement);
+        $fetcher = $this->createMock(HttpFetcher::class);
+        $fetcher->expects($this->never())->method('fetch');
+        $bootstrap = new Bootstrap($fetcher, new CacheModel($pdo), fn (): int => $this->now);
 
         $this->assertSame(self::COM_URLS, $bootstrap->baseUrlsForDomain('example.com'));
-        $this->assertSame($row, $this->dnsRow());
+        $this->assertSame(['https://rdap.nominet.uk/uk/'], $bootstrap->baseUrlsForDomain('example.uk'));
     }
 
     /** @dataProvider failedResponses */
-    public function testFailedFetchWithoutCopyThrows(HttpResponse|RuntimeException $result): void
+    public function testFailedRefreshDefersRetryAndKeepsLastGoodCopy(HttpResponse|Throwable $result): void
+    {
+        $body = $this->primeDnsCache();
+        $bootstrap = $this->bootstrapExpecting('dns', $result, self::VALIDATORS);
+
+        $this->assertSame(self::COM_URLS, $bootstrap->baseUrlsForDomain('example.com'));
+        $row = $this->dnsRow();
+        $this->assertSame($body, $row['body']);
+        $this->assertSame(self::VALIDATORS['If-None-Match'], $row['etag']);
+        $this->assertSame(self::VALIDATORS['If-Modified-Since'], $row['last_modified']);
+        $this->assertSame($this->now + 3600, (int) $row['expires_at']);
+
+        $fetcher = $this->createMock(HttpFetcher::class);
+        $fetcher->expects($this->never())->method('fetch');
+        $anotherInstance = new Bootstrap($fetcher, new CacheModel($this->pdo), fn (): int => $this->now);
+        $this->assertSame(self::COM_URLS, $anotherInstance->baseUrlsForDomain('example.com'));
+
+        $this->now += 3601;
+        $this->assertSame(['https://rdap.nominet.uk/uk/'], $bootstrap->baseUrlsForDomain('example.uk'));
+    }
+
+    /** @dataProvider failedResponses */
+    public function testFailedFetchWithoutCopyThrowsOnEachLookupWithoutRetrying(HttpResponse|Throwable $result): void
     {
         $bootstrap = $this->bootstrapExpecting('dns', $result);
+
+        try {
+            $bootstrap->baseUrlsForDomain('example.com');
+            $this->fail('Expected bootstrap_unavailable');
+        } catch (RuntimeException $error) {
+            $this->assertSame('bootstrap_unavailable', $error->getMessage());
+        }
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('bootstrap_unavailable');
@@ -133,14 +181,15 @@ class BootstrapTest extends Base
         yield 'invalid services' => [new HttpResponse(200, '{"services":[[["com"],[null]]]}')];
         yield 'server error' => [new HttpResponse(503, '')];
         yield 'transport failure' => [new RuntimeException('http_transfer_failed')];
+        yield 'fetcher TypeError' => [new TypeError('unexpected fetcher failure')];
     }
 
-    private function bootstrapExpecting(string $kind, HttpResponse|RuntimeException $result, array $headers = []): Bootstrap
+    private function bootstrapExpecting(string $kind, HttpResponse|Throwable $result, array $headers = []): Bootstrap
     {
         $fetcher = $this->createMock(HttpFetcher::class);
         $call = $fetcher->expects($this->once())->method('fetch')
             ->with('https://data.iana.org/rdap/'.$kind.'.json', $headers);
-        if ($result instanceof RuntimeException) {
+        if ($result instanceof Throwable) {
             $call->willThrowException($result);
         } else {
             $call->willReturn($result);
@@ -172,7 +221,7 @@ class BootstrapTest extends Base
         return $statement->fetch(PDO::FETCH_ASSOC);
     }
 
-    private function fixture(string $kind, array $extraServices = []): string
+    private function fixture(string $kind, array $extraServices = [], bool $specificFirst = true): string
     {
         $body = file_get_contents(__DIR__.'/fixtures/iana-'.$kind.'.json');
         if ($extraServices === []) {
@@ -180,7 +229,9 @@ class BootstrapTest extends Base
         }
 
         $document = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
-        $document['services'] = array_merge($document['services'], $extraServices);
+        $document['services'] = $specificFirst
+            ? array_merge($extraServices, $document['services'])
+            : array_merge($document['services'], $extraServices);
 
         return json_encode($document, JSON_THROW_ON_ERROR);
     }

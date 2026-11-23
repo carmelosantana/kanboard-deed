@@ -19,6 +19,22 @@ final class CacheModel
         return $entry === false ? null : $entry;
     }
 
+    /** Defer retries only while the stale row read before the fetch is still current. */
+    public function deferRetry(array $previous, int $retryAt): void
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE deed_cache SET expires_at = ?
+             WHERE cache_key = ? AND fetched_at = ? AND expires_at = ? AND body = ?'
+        );
+        $statement->execute([
+            $retryAt,
+            $previous['cache_key'],
+            $previous['fetched_at'],
+            $previous['expires_at'],
+            $previous['body'],
+        ]);
+    }
+
     /** Save only if the row read before the HTTP request is still current. */
     public function save(array $entry, ?array $previous): bool
     {

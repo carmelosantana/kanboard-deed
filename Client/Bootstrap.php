@@ -5,13 +5,18 @@ namespace Kanboard\Plugin\Deed\Client;
 use Closure;
 use Kanboard\Plugin\Deed\Model\CacheModel;
 use RuntimeException;
+use Throwable;
 
 final class Bootstrap
 {
     private const BASE_URL = 'https://data.iana.org/rdap/';
     private const DEFAULT_MAX_AGE = 86400;
+    private const RETRY_DELAY = 3600;
 
     private readonly Closure $clock;
+
+    /** @var array<string, array{services: list<array{list<string>, list<string>}>, expires_at: ?int}|RuntimeException> */
+    private array $loaded = [];
 
     public function __construct(
         private readonly HttpFetcher $fetcher,
@@ -99,31 +104,48 @@ final class Bootstrap
     /** @return list<array{list<string>, list<string>}> */
     private function services(string $kind): array
     {
+        $loaded = $this->loaded[$kind] ?? null;
+        if ($loaded instanceof RuntimeException) {
+            throw $loaded;
+        }
+        if ($loaded !== null && ($loaded['expires_at'] === null || $loaded['expires_at'] > ($this->clock)())) {
+            return $loaded['services'];
+        }
+
         $key = 'bootstrap:'.$kind;
         $url = self::BASE_URL.$kind.'.json';
         $entry = $this->cache->get($key);
         $cached = $entry === null ? null : $this->decodeServices($entry['body']);
         if ($cached !== null && $entry['expires_at'] > ($this->clock)()) {
-            return $cached;
+            return $this->remember($kind, $cached, (int) $entry['expires_at']);
         }
 
         $headers = array_filter([
             'If-None-Match' => $cached === null ? null : $entry['etag'],
             'If-Modified-Since' => $cached === null ? null : $entry['last_modified'],
         ], static fn (?string $value): bool => $value !== null);
+        $error = null;
         try {
             $response = $this->fetcher->fetch($url, $headers);
-        } catch (RuntimeException $error) {
-            return $cached ?? throw new RuntimeException('bootstrap_unavailable', 0, $error);
+        } catch (Throwable $error) {
+            $response = null;
         }
 
-        $revalidated = $response->status === 304 && $cached !== null;
-        $services = $revalidated ? $cached : ($response->status === 200 ? $this->decodeServices($response->body) : null);
-        if ($services === null) {
-            return $cached ?? throw new RuntimeException('bootstrap_unavailable');
-        }
-
+        $revalidated = $response?->status === 304 && $cached !== null;
+        $services = $revalidated ? $cached : ($response?->status === 200 ? $this->decodeServices($response->body) : null);
         $now = ($this->clock)();
+        if ($services === null) {
+            if ($cached === null) {
+                $failure = new RuntimeException('bootstrap_unavailable', 0, $error);
+                $this->loaded[$kind] = $failure;
+                throw $failure;
+            }
+
+            $this->cache->deferRetry($entry, $now + self::RETRY_DELAY);
+            return $this->remember($kind, $cached, null);
+        }
+
+        $expiresAt = $now + self::maxAge($response);
         $saved = $this->cache->save([
             'cache_key' => $key,
             'url' => $url,
@@ -131,17 +153,25 @@ final class Bootstrap
             'etag' => $response->header('ETag') ?? ($revalidated ? $entry['etag'] : null),
             'last_modified' => $response->header('Last-Modified') ?? ($revalidated ? $entry['last_modified'] : null),
             'fetched_at' => $now,
-            'expires_at' => $now + self::maxAge($response),
+            'expires_at' => $expiresAt,
             'http_status' => $response->status,
         ], $entry);
 
         if (!$saved) {
             $current = $this->cache->get($key);
-            if ($current !== null) {
-                return $this->decodeServices($current['body']) ?? $services;
+            $currentServices = $current === null ? null : $this->decodeServices($current['body']);
+            if ($currentServices !== null) {
+                return $this->remember($kind, $currentServices, (int) $current['expires_at']);
             }
         }
 
+        return $this->remember($kind, $services, $expiresAt);
+    }
+
+    /** A null expiry pins the last good services for this instance after a failed refresh. */
+    private function remember(string $kind, array $services, ?int $expiresAt): array
+    {
+        $this->loaded[$kind] = ['services' => $services, 'expires_at' => $expiresAt];
         return $services;
     }
 
