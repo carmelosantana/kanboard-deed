@@ -87,6 +87,22 @@ class Plugin extends Base
         $this->route->addRoute('deed/lookup', 'LookupController', 'index', 'Deed');
         $this->applicationAccessMap->add('LookupController', ['index'], Role::APP_MANAGER);
 
+        $this->route->addRoute('deed/settings', 'SettingsController', 'index', 'Deed');
+        $this->route->addRoute('deed/settings/save', 'SettingsController', 'save', 'Deed');
+        $this->route->addRoute('deed/settings/refresh-bootstrap', 'SettingsController', 'refreshBootstrap', 'Deed');
+        $this->applicationAccessMap->add('SettingsController', ['index', 'save', 'refreshBootstrap'], Role::APP_ADMIN);
+
+        $this->route->addRoute('deed/projects/:project_id/domains', 'ProjectDomainsController', 'index', 'Deed');
+        $this->applicationAccessMap->add('ProjectDomainsController', 'index', Role::APP_USER);
+        $this->projectAccessMap->add('ProjectDomainsController', 'index', Role::PROJECT_VIEWER);
+
+        $this->hook->on('template:config:sidebar', ['template' => 'Deed:config/sidebar']);
+        $this->hook->on('template:project:sidebar', [
+            'template' => 'Deed:project/sidebar',
+            'callable' => static fn (array $project): array => [
+                'isMember' => $container['projectPermissionModel']->isMember($project['id'], $container['userSession']->getId()),
+            ],
+        ]);
         $this->hook->on('template:dashboard:sidebar', ['template' => 'Deed:nav/dashboard_sidebar']);
         $this->hook->on('template:header:dropdown', ['template' => 'Deed:nav/user_dropdown']);
         $this->hook->on('template:layout:css', ['template' => 'plugins/Deed/Assets/css/deed.css']);
