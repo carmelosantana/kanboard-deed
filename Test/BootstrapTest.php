@@ -15,9 +15,12 @@ use TypeError;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 class BootstrapTest extends Base
 {
+    use ReleasesConnection;
+
     private const COM_URLS = ['https://rdap.verisign.com/com/v1/'];
     private const VALIDATORS = [
         'If-None-Match' => 'W/"original"',

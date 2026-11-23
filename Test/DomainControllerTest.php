@@ -14,9 +14,12 @@ use KanboardTests\units\Base;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 class DomainControllerTest extends Base
 {
+    use ReleasesConnection;
+
     private const DOMAIN = 'madeinnewburgh.com';
 
     protected function setUp(): void

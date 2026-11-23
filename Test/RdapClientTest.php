@@ -14,9 +14,12 @@ use RuntimeException;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 class RdapClientTest extends Base
 {
+    use ReleasesConnection;
+
     private const DOMAIN = 'madeinnewburgh.com';
     private const REGISTRY = 'https://rdap.verisign.com/com/v1/domain/';
     private const REFERRAL = 'https://cart-before.porkbun.horse/rdap/domain/MADEINNEWBURGH.COM';

@@ -16,9 +16,12 @@ use RuntimeException;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 class RefreshServiceTest extends Base
 {
+    use ReleasesConnection;
+
     private const DAY = 86400;
     private const RECORD = [
         'status' => 'ok',

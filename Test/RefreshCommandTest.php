@@ -9,9 +9,12 @@ use Symfony\Component\Console\Tester\CommandTester;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 class RefreshCommandTest extends Base
 {
+    use ReleasesConnection;
+
     private CommandTester $command;
 
     protected function setUp(): void

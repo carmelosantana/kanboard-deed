@@ -16,9 +16,12 @@ use RuntimeException;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 abstract class DeedPageTestCase extends Base
 {
+    use ReleasesConnection;
+
     protected function setUp(): void
     {
         parent::setUp();

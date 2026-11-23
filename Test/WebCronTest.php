@@ -15,9 +15,12 @@ use stdClass;
 use function Kanboard\Plugin\Deed\Schema\version_1;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 class WebCronTest extends Base
 {
+    use ReleasesConnection;
+
     private const TODAY = '2026-11-23';
 
     protected function setUp(): void

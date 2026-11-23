@@ -9,9 +9,12 @@ use function Kanboard\Plugin\Deed\Schema\version_1;
 use const Kanboard\Plugin\Deed\Schema\VERSION;
 
 require_once 'tests/units/Base.php';
+require_once __DIR__.'/ReleasesConnection.php';
 
 class SchemaTest extends Base
 {
+    use ReleasesConnection;
+
     public function testVersion1Tables(): void
     {
         $dialect = ucfirst(DB_DRIVER);
