@@ -19,11 +19,12 @@ final class RenewalService
 {
     private const DAY = 86400;
     private const DEFAULT_THRESHOLDS = [30, 14, 7];
+    private const EXPIRY_CHANGED = 'expiry_changed';
+    private const EXPIRY_CHANGED_COMMENT = 'Expiry changed — registry now shows ';
     private const POSTGRES_LOCK_NAMESPACE = 0x44454544; // DEED
     private const MYSQL_LOCK_KEY = "CONCAT('deed:', LEFT(SHA2(DATABASE(), 256), 40), ':', ?)";
 
     private readonly string $driver;
-    private bool $evaluating = false;
     private ?string $lastProblem = null;
 
     public function __construct(
@@ -44,10 +45,6 @@ final class RenewalService
 
     public function evaluate(array $domain, int $now): void
     {
-        // Synchronous task hooks can reenter this service on the same connection.
-        if ($this->evaluating) {
-            return;
-        }
         $this->lastProblem = null;
         $expiry = RdapClient::effectiveExpiry($domain['registry_expires_at'], $domain['registrar_expires_at']);
         if ($expiry === null && $domain['status'] !== 'not_found') {
@@ -57,13 +54,11 @@ final class RenewalService
         // Core event subscribers can commit the shared PDO transaction. Use locks
         // that survive core writes so concurrent evaluations cannot both retry a claim.
         $release = $this->acquireLock((int) $domain['id']);
-        $this->evaluating = true;
         try {
             if ($this->isCurrentDomain($domain)) {
                 $this->evaluateCycles($domain, $now, $expiry);
             }
         } finally {
-            $this->evaluating = false;
             $release();
         }
     }
@@ -97,8 +92,22 @@ final class RenewalService
             $unlock = 'SELECT RELEASE_LOCK('.self::MYSQL_LOCK_KEY.')';
         } else {
             $key = self::POSTGRES_LOCK_NAMESPACE.', ?';
-            $this->pdo->prepare("SELECT pg_advisory_lock($key)")->execute([$domainId]);
-            $unlock = "SELECT pg_advisory_unlock($key)";
+            $statement = $this->pdo->prepare("SELECT CASE WHEN pg_try_advisory_lock($key) THEN 1 ELSE 0 END");
+            $deadline = hrtime(true) + 10_000_000_000;
+            do {
+                $statement->execute([$domainId]);
+                if ((int) $statement->fetchColumn() === 1) {
+                    return function () use ($key, $domainId): void {
+                        $this->pdo->prepare("SELECT pg_advisory_unlock($key)")->execute([$domainId]);
+                    };
+                }
+                $remaining = $deadline - hrtime(true);
+                if ($remaining <= 0) {
+                    break;
+                }
+                usleep((int) min(50_000, intdiv($remaining, 1000)));
+            } while (hrtime(true) < $deadline);
+            throw new RuntimeException('Could not lock Deed renewals');
         }
 
         return function () use ($unlock, $domainId): void {
@@ -142,6 +151,10 @@ final class RenewalService
             return;
         }
 
+        if ($current !== null && $current['closed_at'] !== null) {
+            $current = $this->reopenSupersededCycle($current);
+        }
+
         $thresholds = $this->thresholds();
         $first = array_shift($thresholds);
         $secondsLeft = $expiry - $now;
@@ -151,7 +164,7 @@ final class RenewalService
         }
 
         if ($current !== null) {
-            $days = max(0, intdiv($secondsLeft, self::DAY));
+            $days = max(0, (int) ceil($secondsLeft / self::DAY));
             $notices = [];
             foreach ($thresholds as $threshold) {
                 if ($secondsLeft <= $threshold * self::DAY) {
@@ -268,14 +281,64 @@ final class RenewalService
     {
         $taskId = (int) $cycle['task_id'];
         if ($this->isOpenTask($taskId)) {
-            $prefix = $expiry > (int) $cycle['cycle_expires_at'] ? 'Renewed' : 'Expiry changed';
-            $this->comment($taskId, $prefix.' — registry now shows '.gmdate('Y-m-d', $expiry).'.');
+            $superseded = $expiry < (int) $cycle['cycle_expires_at'];
+            $prefix = $superseded ? self::EXPIRY_CHANGED_COMMENT : 'Renewed — registry now shows ';
+            $this->comment($taskId, $prefix.gmdate('Y-m-d', $expiry).'.');
             if (!$this->taskStatus->close($taskId)) {
                 throw new RuntimeException('Could not close Deed renewal task');
             }
+            if ($superseded) {
+                $sent = json_decode($cycle['thresholds_sent'], true, flags: JSON_THROW_ON_ERROR);
+                $sent[] = self::EXPIRY_CHANGED;
+                $cycle['thresholds_sent'] = json_encode($sent, JSON_THROW_ON_ERROR);
+            }
         }
 
-        $this->pdo->prepare('UPDATE deed_renewals SET closed_at = ? WHERE id = ?')->execute([$now, $cycle['id']]);
+        $this->pdo->prepare('UPDATE deed_renewals SET closed_at = ?, thresholds_sent = ? WHERE id = ?')
+            ->execute([$now, $cycle['thresholds_sent'], $cycle['id']]);
+    }
+
+    private function reopenSupersededCycle(array $cycle): array
+    {
+        $taskId = (int) $cycle['task_id'];
+        if (!$this->taskStatus->isClosed($taskId)) {
+            return $cycle;
+        }
+
+        $sent = json_decode($cycle['thresholds_sent'], true, flags: JSON_THROW_ON_ERROR);
+        if (!in_array(self::EXPIRY_CHANGED, $sent, true)) {
+            // Earlier versions recorded the closure reason only in the task comment.
+            $statement = $this->pdo->prepare(
+                'SELECT 1 FROM comments WHERE task_id = ? AND user_id = 0 AND comment LIKE ? LIMIT 1'
+            );
+            $statement->execute([$taskId, self::EXPIRY_CHANGED_COMMENT.'%']);
+            if (!$statement->fetchColumn()) {
+                return $cycle;
+            }
+        }
+
+        // Retire the old recovery reference atomically with resetting the claim.
+        // A retry after interrupted creation must only find the replacement task.
+        $reference = $this->taskReference((int) $cycle['id']);
+        $this->pdo->beginTransaction();
+        try {
+            $retire = $this->pdo->prepare('UPDATE tasks SET reference = ? WHERE id = ? AND reference = ? AND is_active = ?');
+            $retire->execute([$reference.':superseded:'.$taskId, $taskId, $reference, TaskModel::STATUS_CLOSED]);
+            if ($retire->rowCount() === 0) {
+                $this->pdo->commit();
+                return $cycle;
+            }
+            $this->pdo->prepare('UPDATE deed_renewals SET closed_at = NULL, task_id = 0, thresholds_sent = ? WHERE id = ?')
+                ->execute(['[]', $cycle['id']]);
+            $this->pdo->commit();
+        } catch (Throwable $exception) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $exception;
+        }
+
+        return array_replace($cycle, ['closed_at' => null, 'task_id' => 0, 'thresholds_sent' => '[]']);
     }
 
     private function sendNotices(array $cycle, array $notices): void

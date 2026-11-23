@@ -73,6 +73,18 @@ class RenewalServiceTest extends Base
         $this->assertSame(1, $this->taskCount());
     }
 
+    public function testReminderRoundsUpAtTheSweepHour(): void
+    {
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        $now = $this->expiry - 14 * self::DAY + 3600;
+        $this->renewals->evaluate($domain, $now);
+        $this->renewals->evaluate($domain, $now);
+
+        $this->assertSame(['Expires in 14 days.'], $this->comments($taskId));
+    }
+
     public function testLaterExpiryClosesOldCycleAndWaitsForNewThreshold(): void
     {
         $domain = $this->watch($this->project);
@@ -164,8 +176,38 @@ class RenewalServiceTest extends Base
         $taskId = (int) $this->cycles()[1]['task_id'];
         $this->renewals->evaluate($domain, $expiry - 5 * self::DAY - 1);
         $this->renewals->evaluate($domain, $expiry - 5 * self::DAY);
-        $this->assertSame(['Expires in 5 days.'], $this->comments($taskId));
+        $this->assertSame(['Expires in 6 days.'], $this->comments($taskId));
         $this->assertSame([14, 7], json_decode($this->cycles()[1]['thresholds_sent'], true));
+    }
+
+    public function testReturningExpiryReusesCycleAndCreatesOneOpenTask(): void
+    {
+        $domain = $this->watch($this->project);
+        $earlier = array_replace($domain, ['registry_expires_at' => $this->expiry - self::DAY]);
+        $this->evaluate($domain, 14);
+        $original = $this->cycles()[0];
+        $this->evaluate($earlier, 14);
+        $earlierTaskId = (int) $this->cycles()[1]['task_id'];
+
+        $this->evaluate($domain, 14);
+        $this->evaluate($domain, 14);
+
+        $cycles = $this->cycles();
+        $this->assertCount(2, $cycles);
+        $this->assertSame($original['id'], $cycles[0]['id']);
+        $this->assertNull($cycles[0]['closed_at']);
+        $replacementId = (int) $cycles[0]['task_id'];
+        $this->assertNotEquals($original['task_id'], $replacementId);
+        $this->assertTrue($this->container['taskStatusModel']->isOpen($replacementId));
+        $this->assertTrue($this->container['taskStatusModel']->isClosed((int) $original['task_id']));
+        $this->assertTrue($this->container['taskStatusModel']->isClosed($earlierTaskId));
+        $this->assertSame(['Expires in 14 days.'], $this->comments($replacementId));
+        $this->assertSame(3, $this->taskCount());
+
+        $this->evaluate($earlier, 13);
+        $this->assertSame(3, $this->taskCount());
+        $this->assertSame($earlierTaskId, (int) $this->cycles()[1]['task_id']);
+        $this->assertTrue($this->container['taskStatusModel']->isClosed($earlierTaskId));
     }
 
     public function testHumanClosedTaskStaysClosedAndReceivesNoComments(): void
@@ -201,6 +243,39 @@ class RenewalServiceTest extends Base
         $this->assertSame(0, $this->taskCount());
         $this->assertCount(1, $this->cycles());
         $this->assertSame($taskId, (int) $this->cycles()[0]['task_id']);
+    }
+
+    /** @dataProvider terminalTaskActions */
+    public function testReturningExpiryDoesNotReplaceAHumanClosedOrDeletedTask(string $action): void
+    {
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        if ($action === 'close') {
+            $this->assertTrue($this->container['taskStatusModel']->close($taskId));
+        } else {
+            // Keep SQLite from reusing the deleted task's ID for another task.
+            $this->container['taskCreationModel']->create([
+                'title' => 'Unrelated task',
+                'project_id' => $this->project,
+            ]);
+            $this->assertTrue($this->container['taskModel']->remove($taskId));
+        }
+
+        $this->evaluate(array_replace($domain, ['registry_expires_at' => $this->expiry - self::DAY]), 29);
+        $count = $this->taskCount();
+        $this->evaluate($domain, 28);
+
+        $cycle = $this->cycles()[0];
+        $this->assertNotNull($cycle['closed_at']);
+        $this->assertSame($taskId, (int) $cycle['task_id']);
+        $this->assertSame($count, $this->taskCount());
+        $this->assertSame([], $this->comments($taskId));
+    }
+
+    public static function terminalTaskActions(): array
+    {
+        return [['close'], ['delete']];
     }
 
     public function testNotFoundCommentsOnceOnAnExistingOpenTask(): void
