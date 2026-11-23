@@ -84,6 +84,9 @@ class Plugin extends Base
         }
         $this->applicationAccessMap->add('DomainController', array_keys($domainActions), Role::APP_MANAGER);
 
+        $this->route->addRoute('deed/lookup', 'LookupController', 'index', 'Deed');
+        $this->applicationAccessMap->add('LookupController', ['index'], Role::APP_MANAGER);
+
         $this->hook->on('template:dashboard:sidebar', ['template' => 'Deed:nav/dashboard_sidebar']);
         $this->hook->on('template:header:dropdown', ['template' => 'Deed:nav/user_dropdown']);
         $this->hook->on('template:layout:css', ['template' => 'plugins/Deed/Assets/css/deed.css']);

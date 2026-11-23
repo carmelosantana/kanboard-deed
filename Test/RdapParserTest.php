@@ -79,6 +79,7 @@ class RdapParserTest extends TestCase
             'handle' => 'NET-8-8-8-0-2',
             'range' => '8.8.8.0 - 8.8.8.255',
             'country' => null,
+            'registrant' => 'Google LLC',
             'abuse_email' => 'network-abuse@google.com',
         ], (new RdapParser())->parseNetwork($this->fixture('ip-arin')));
     }
@@ -92,6 +93,8 @@ class RdapParserTest extends TestCase
             'handle' => 'AS15169',
             'range' => '15169',
             'country' => null,
+            'registrant' => 'Google LLC',
+            'abuse_email' => 'network-abuse@google.com',
         ], $parser->parseAutnum($record));
 
         $record['endAutnum'] = 15179;
@@ -118,6 +121,7 @@ class RdapParserTest extends TestCase
             'handle' => null,
             'range' => null,
             'country' => null,
+            'registrant' => null,
             'abuse_email' => null,
         ], $parser->parseNetwork(['startAddress' => '2001:db8::']));
         $this->assertSame([
@@ -125,6 +129,8 @@ class RdapParserTest extends TestCase
             'handle' => null,
             'range' => null,
             'country' => null,
+            'registrant' => null,
+            'abuse_email' => null,
         ], $parser->parseAutnum([]));
     }
 

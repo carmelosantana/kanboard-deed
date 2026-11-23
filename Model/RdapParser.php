@@ -24,22 +24,29 @@ class RdapParser
 
     public function parseNetwork(array $record): array
     {
+        $entities = (array) ($record['entities'] ?? []);
+
         return [
             'name' => $record['name'] ?? null,
             'handle' => $record['handle'] ?? null,
             'range' => $this->formatRange($record['startAddress'] ?? null, $record['endAddress'] ?? null),
             'country' => $record['country'] ?? null,
-            'abuse_email' => $this->contactValue((array) ($record['entities'] ?? []), 'abuse', 'email'),
+            'registrant' => $this->contactValue($entities, 'registrant', 'fn'),
+            'abuse_email' => $this->contactValue($entities, 'abuse', 'email'),
         ];
     }
 
     public function parseAutnum(array $record): array
     {
+        $entities = (array) ($record['entities'] ?? []);
+
         return [
             'name' => $record['name'] ?? null,
             'handle' => $record['handle'] ?? null,
             'range' => $this->formatRange($record['startAutnum'] ?? null, $record['endAutnum'] ?? null),
             'country' => $record['country'] ?? null,
+            'registrant' => $this->contactValue($entities, 'registrant', 'fn'),
+            'abuse_email' => $this->contactValue($entities, 'abuse', 'email'),
         ];
     }
 
