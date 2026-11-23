@@ -51,7 +51,7 @@ final class RefreshService
     }
 
     /** @return array{refreshed: int, failed: int, skipped: int} */
-    public function sweep(?int $limit = null): array
+    public function sweep(?int $limit = null, ?int $budgetSeconds = null): array
     {
         $counts = ['refreshed' => 0, 'failed' => 0, 'skipped' => 0];
         $limit = min($limit ?? $this->batchSize, $this->batchSize);
@@ -69,6 +69,10 @@ final class RefreshService
 
         $ids = $statement->fetchAll(PDO::FETCH_COLUMN);
         foreach ($ids as $index => $id) {
+            if ($budgetSeconds !== null && ($this->clock)() - $now >= $budgetSeconds) {
+                break;
+            }
+
             try {
                 $status = $this->sweepDomain((int) $id, $now);
             } catch (Throwable $exception) {
