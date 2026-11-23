@@ -9,6 +9,8 @@ use Kanboard\Plugin\Deed\Client\RdapClient;
 use Kanboard\Plugin\Deed\Model\CacheModel;
 use Kanboard\Plugin\Deed\Model\DomainModel;
 use Kanboard\Plugin\Deed\Model\RdapParser;
+use Kanboard\Plugin\Deed\Model\RefreshService;
+use Kanboard\Plugin\Deed\Model\SnapshotModel;
 
 class Plugin extends Base
 {
@@ -31,6 +33,21 @@ class Plugin extends Base
             $container['deedBootstrap'],
             $container['deedParser'],
             $container['deedCache']
+        );
+        $this->container['deedSnapshotModel'] = static fn ($container) => new SnapshotModel(
+            $container['db']->getConnection()
+        );
+        $this->container['deedRefreshService'] = static fn ($container) => new RefreshService(
+            $container['db']->getConnection(),
+            $container['deedDomainModel'],
+            $container['deedSnapshotModel'],
+            $container['deedRdap'],
+            (int) $container['configModel']->get('deed_batch_size', 25),
+            static function (array $domain, int $now) use ($container): void {
+                if (isset($container['deedRenewalService'])) {
+                    $container['deedRenewalService']->evaluate($domain, $now);
+                }
+            }
         );
     }
 
