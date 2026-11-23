@@ -3,7 +3,6 @@
 namespace Kanboard\Plugin\Deed\Controller;
 
 use Kanboard\Controller\BaseController;
-use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\Deed\Client\RdapClient;
 
 class ProjectDomainsController extends BaseController
@@ -15,10 +14,6 @@ class ProjectDomainsController extends BaseController
             $this->response->text(t('Page not found'), 404);
             return;
         }
-        if (!$this->projectPermissionModel->isMember($projectId, $this->userSession->getId())) {
-            throw new AccessForbiddenException();
-        }
-
         $project = $this->getProject();
         $domains = $this->deedDomainModel->listForProject($projectId);
         foreach ($domains as &$domain) {

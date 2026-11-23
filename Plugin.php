@@ -94,6 +94,7 @@ class Plugin extends Base
 
         $this->route->addRoute('deed/projects/:project_id/domains', 'ProjectDomainsController', 'index', 'Deed');
         $this->applicationAccessMap->add('ProjectDomainsController', 'index', Role::APP_USER);
+        // Kanboard's own project rule: members (viewer and up) and app admins; everyone else gets 403.
         $this->projectAccessMap->add('ProjectDomainsController', 'index', Role::PROJECT_VIEWER);
 
         $this->hook->on('template:config:sidebar', ['template' => 'Deed:config/sidebar']);

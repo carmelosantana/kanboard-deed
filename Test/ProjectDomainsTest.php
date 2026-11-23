@@ -46,7 +46,17 @@ class ProjectDomainsTest extends DeedPageTestCase
     {
         yield [Role::APP_USER];
         yield [Role::APP_MANAGER];
-        yield [Role::APP_ADMIN];
+    }
+
+    public function testAppAdminSeesAnyProjectLikeTheRestOfKanboard(): void
+    {
+        $projectId = $this->container['projectModel']->create(['name' => 'Admin is not a member']);
+        $domains = $this->container['deedDomainModel'];
+        $domains->update($domains->create('admin-visible.example', 1), $projectId, 0);
+
+        [$status, $body] = $this->dispatch('deed/projects/'.$projectId.'/domains', Role::APP_ADMIN);
+        $this->assertSame(200, $status);
+        $this->assertStringContainsString('admin-visible.example', $body);
     }
 
     public function testProjectZeroCannotExposeUnlinkedDomains(): void
