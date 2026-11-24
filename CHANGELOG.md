@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.1 — unreleased
+## 1.0.1 — 2026-11-24
 
 - The settings controller is now `DeedSettingsController`. Kanboard keys access rules by short controller name,
   so the admin-only rule for Deed's `SettingsController` also locked other plugins' settings pages to admins.

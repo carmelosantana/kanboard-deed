@@ -15,7 +15,7 @@ class PluginTest extends TestCase
         $manifest = json_decode(file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
 
         $plugin = new Plugin(new Container());
-        $this->assertSame('1.0.0', $manifest['version']);
+        $this->assertSame('1.0.1', $manifest['version']);
         $this->assertSame($manifest['version'], $plugin->getPluginVersion());
     }
 }
