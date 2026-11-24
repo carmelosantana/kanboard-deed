@@ -4,7 +4,7 @@ namespace Kanboard\Plugin\Deed\Test;
 
 use Kanboard\Core\Security\Role;
 
-require_once __DIR__.'/SettingsControllerTest.php';
+require_once __DIR__.'/DeedSettingsControllerTest.php';
 
 class ProjectDomainsTest extends DeedPageTestCase
 {

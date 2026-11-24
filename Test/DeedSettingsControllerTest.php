@@ -87,7 +87,7 @@ abstract class DeedPageTestCase extends Base
     }
 }
 
-class SettingsControllerTest extends DeedPageTestCase
+class DeedSettingsControllerTest extends DeedPageTestCase
 {
     private const VALUES = [
         'deed_default_project_id' => '0',
@@ -103,6 +103,18 @@ class SettingsControllerTest extends DeedPageTestCase
         $this->assertStringContainsString('>Deed</a>', $body);
         $this->assertStringContainsString('value="30,14,7"', $body);
         $this->assertStringContainsString('Refresh bootstrap', $body);
+    }
+
+    /**
+     * AccessMap keys rules by the short class name alone, so the admin rule must name Deed's own
+     * controller, not a `SettingsController` other plugins also have (#7337).
+     */
+    public function testAdminRuleDoesNotLeakToOtherPluginsSettingsControllers(): void
+    {
+        $map = $this->container['applicationAccessMap'];
+        $this->assertNotContains(Role::APP_USER, $map->getRoles('DeedSettingsController', 'save'));
+        $this->assertContains(Role::APP_USER, $map->getRoles('SettingsController', 'save'));
+        $this->assertContains(Role::APP_USER, $map->getRoles('SettingsController', 'index'));
     }
 
     /** @dataProvider restrictedRoutes */

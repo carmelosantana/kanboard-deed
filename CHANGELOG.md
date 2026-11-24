@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 — unreleased
+
+- The settings controller is now `DeedSettingsController`. Kanboard keys access rules by short controller name,
+  so the admin-only rule for Deed's `SettingsController` also locked other plugins' settings pages to admins.
+  URLs are unchanged (`deed/settings`).
+
 ## 1.0.0 — unreleased
 
 - Domain watchlist with add, bulk add (paste a list) and refresh now; registrar, registry and registrar expiry,

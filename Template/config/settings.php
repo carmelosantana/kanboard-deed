@@ -2,7 +2,7 @@
     <h2><?= t('Deed settings') ?></h2>
 </div>
 
-<form method="post" action="<?= $this->url->href('SettingsController', 'save', ['plugin' => 'Deed']) ?>">
+<form method="post" action="<?= $this->url->href('DeedSettingsController', 'save', ['plugin' => 'Deed']) ?>">
     <?= $this->form->csrf() ?>
 
     <?= $this->form->label(t('Default renewal project'), 'deed_default_project_id') ?>
@@ -28,7 +28,7 @@
 <div class="page-header">
     <h2><?= t('RDAP bootstrap') ?></h2>
 </div>
-<form method="post" action="<?= $this->url->href('SettingsController', 'refreshBootstrap', ['plugin' => 'Deed']) ?>">
+<form method="post" action="<?= $this->url->href('DeedSettingsController', 'refreshBootstrap', ['plugin' => 'Deed']) ?>">
     <?= $this->form->csrf() ?>
     <button type="submit" class="btn"><?= t('Refresh bootstrap') ?></button>
 </form>

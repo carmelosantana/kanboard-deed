@@ -6,7 +6,7 @@ use Kanboard\Controller\BaseController;
 use Kanboard\Plugin\Deed\Client\Bootstrap;
 use RuntimeException;
 
-class SettingsController extends BaseController
+class DeedSettingsController extends BaseController
 {
     // Kanboard's PostgreSQL settings.value column is VARCHAR(255).
     private const MAX_THRESHOLD_LENGTH = 255;
@@ -150,7 +150,7 @@ class SettingsController extends BaseController
     private function redirectToSettings(): void
     {
         $this->response->withStatusCode(303)->redirect(
-            $this->helper->url->to('SettingsController', 'index', ['plugin' => 'Deed'])
+            $this->helper->url->to('DeedSettingsController', 'index', ['plugin' => 'Deed'])
         );
     }
 }

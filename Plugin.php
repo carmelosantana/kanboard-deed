@@ -87,10 +87,10 @@ class Plugin extends Base
         $this->route->addRoute('deed/lookup', 'LookupController', 'index', 'Deed');
         $this->applicationAccessMap->add('LookupController', ['index'], Role::APP_MANAGER);
 
-        $this->route->addRoute('deed/settings', 'SettingsController', 'index', 'Deed');
-        $this->route->addRoute('deed/settings/save', 'SettingsController', 'save', 'Deed');
-        $this->route->addRoute('deed/settings/refresh-bootstrap', 'SettingsController', 'refreshBootstrap', 'Deed');
-        $this->applicationAccessMap->add('SettingsController', ['index', 'save', 'refreshBootstrap'], Role::APP_ADMIN);
+        $this->route->addRoute('deed/settings', 'DeedSettingsController', 'index', 'Deed');
+        $this->route->addRoute('deed/settings/save', 'DeedSettingsController', 'save', 'Deed');
+        $this->route->addRoute('deed/settings/refresh-bootstrap', 'DeedSettingsController', 'refreshBootstrap', 'Deed');
+        $this->applicationAccessMap->add('DeedSettingsController', ['index', 'save', 'refreshBootstrap'], Role::APP_ADMIN);
 
         $this->route->addRoute('deed/projects/:project_id/domains', 'ProjectDomainsController', 'index', 'Deed');
         $this->applicationAccessMap->add('ProjectDomainsController', 'index', Role::APP_USER);
