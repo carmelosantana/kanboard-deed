@@ -228,18 +228,28 @@ class DomainController extends BaseController
         return $this->userSession->isAdmin() || $this->hasWriteRole($projectId, $userId);
     }
 
-    /** The project a refresh would write renewal tasks to, if any: the linked one, else the default. */
+    /**
+     * A refresh writes to the project it targets (the linked one, else the default) and to every project still
+     * holding an open renewal task for the domain, which an evaluation comments on and closes.
+     */
     private function canWriteRenewalProject(array $domain, int $userId): bool
     {
+        $projectIds = $this->deedRenewalService->projectIdsWithOpenTasks((int) $domain['id']);
         $projectId = (int) $domain['project_id'];
         if (! $this->projectModel->exists($projectId)) {
             $projectId = (int) $this->configModel->getOption('deed_default_project_id', 0);
-            if (! $this->projectModel->exists($projectId)) {
-                return true;
+        }
+        if ($this->projectModel->exists($projectId)) {
+            $projectIds[] = $projectId;
+        }
+
+        foreach (array_unique($projectIds) as $id) {
+            if (! $this->canWriteProject($id, $userId)) {
+                return false;
             }
         }
 
-        return $this->canWriteProject($projectId, $userId);
+        return true;
     }
 
     private function readId(mixed $value): ?int

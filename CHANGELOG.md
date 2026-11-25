@@ -8,7 +8,8 @@
 - Security: each evaluation also unassigns an open renewal task whose owner cannot hold a task in its project,
   covering tasks created before this check and owners later removed from the project.
 - Security: saving a domain with "Keep current project" and refreshing a domain now require write access to the
-  linked project (or the default one a refresh falls back to). A viewer, a custom-role user, a removed member or a pre-upgrade
+  linked project (or the default one a refresh falls back to) and to every project still holding an open renewal task
+  for the domain, so relinking cannot reach tasks in a project the user cannot write to. A viewer, a custom-role user, a removed member or a pre-upgrade
   mapping can no longer keep the link or trigger renewal task changes there. The scheduled sweep is unchanged.
 
 ## 1.0.1 — 2026-11-25

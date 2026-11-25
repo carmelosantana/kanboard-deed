@@ -63,6 +63,19 @@ final class RenewalService
         return null;
     }
 
+    /** Projects holding an open renewal task for the domain: an evaluation comments on and closes those tasks. */
+    public function projectIdsWithOpenTasks(int $domainId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT DISTINCT tasks.project_id FROM deed_renewals
+             JOIN tasks ON tasks.id = deed_renewals.task_id
+             WHERE deed_renewals.domain_id = ? AND deed_renewals.closed_at IS NULL AND tasks.is_active = ?'
+        );
+        $statement->execute([$domainId, TaskModel::STATUS_OPEN]);
+
+        return array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN));
+    }
+
     public function evaluate(array $domain, int $now): void
     {
         $this->lastProblem = null;

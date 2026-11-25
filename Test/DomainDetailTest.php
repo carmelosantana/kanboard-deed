@@ -230,6 +230,46 @@ class DomainDetailTest extends Base
         $this->assertSame(0, (int) $this->container['db']->table('comments')->count());
     }
 
+    public static function earlierCycleAccess(): iterable
+    {
+        yield 'viewer of the earlier project' => [Role::PROJECT_VIEWER, 403];
+        yield 'not a member of the earlier project' => [null, 403];
+        yield 'member of both projects' => [Role::PROJECT_MEMBER, 303];
+    }
+
+    /** @dataProvider earlierCycleAccess */
+    public function testRefreshNeedsWriteAccessToProjectsHoldingOpenRenewalTasks(?string $roleInEarlier, int $expected): void
+    {
+        $projects = $this->container['projectModel'];
+        $earlier = $projects->create(['name' => 'Earlier Project']);
+        $current = $projects->create(['name' => 'Current Project']);
+        $roles = $this->container['projectUserRoleModel'];
+        $roles->addUser($current, 1, Role::PROJECT_MEMBER);
+        if ($roleInEarlier !== null) {
+            $roles->addUser($earlier, 1, $roleInEarlier);
+        }
+        $taskId = $this->container['taskCreationModel']->create(['title' => 'Renew example.com', 'project_id' => $earlier]);
+        $pdo = $this->container['db']->getConnection();
+        $pdo->prepare('INSERT INTO deed_renewals (domain_id, cycle_expires_at, task_id, thresholds_sent) VALUES (?, ?, ?, ?)')
+            ->execute([$this->domainId, strtotime('2030-01-01 UTC'), $taskId, '[]']);
+        $this->container['deedDomainModel']->update($this->domainId, $current, 0);
+        $pdo->prepare('UPDATE deed_domains SET registry_expires_at = ? WHERE id = ?')
+            ->execute([time() + 400 * 86400, $this->domainId]);
+        if ($expected === 303) {
+            // The refresh proceeds; a failing registry is enough to show it was not refused.
+            $fetcher = $this->createMock(HttpFetcher::class);
+            $fetcher->method('fetch')->willReturn(new \Kanboard\Plugin\Deed\Client\HttpResponse(500, ''));
+            $this->container['deedHttp'] = $fetcher;
+        }
+
+        // The fetcher mock in setUp fails the test if a refused refresh runs a lookup.
+        $this->assertSame($expected, $this->dispatch('refresh', ['domain_id' => (string) $this->domainId])[0]);
+        if ($expected === 403) {
+            $this->assertSame(0, (int) $this->container['db']->table('comments')->count());
+            $this->assertSame(1, (int) $this->container['db']->table('tasks')->eq('id', $taskId)->eq('is_active', 1)->count());
+        }
+    }
+
     public function testCustomProjectRolesAreRefusedForSelectionKeepAndRefresh(): void
     {
         // A custom role may forbid creating or closing tasks; Deed writes through models, so only built-in write roles pass.
