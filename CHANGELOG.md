@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Security: a domain's project list now offers only projects where the user is above viewer, and the assignee
+  must be able to hold a task in that project. A renewal task whose assignee is not a project member is left
+  unassigned instead of appearing on that user's dashboard.
+
 ## 1.0.1 — 2026-11-25
 
 - The settings controller is now `DeedSettingsController`. Kanboard keys access rules by short controller name,
