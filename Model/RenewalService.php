@@ -6,6 +6,7 @@ use Closure;
 use Kanboard\Model\CommentModel;
 use Kanboard\Model\ConfigModel;
 use Kanboard\Model\ProjectModel;
+use Kanboard\Model\ProjectPermissionModel;
 use Kanboard\Model\TaskCreationModel;
 use Kanboard\Model\TaskModel;
 use Kanboard\Model\TaskStatusModel;
@@ -33,7 +34,8 @@ final class RenewalService
         private readonly ProjectModel $projects,
         private readonly TaskCreationModel $taskCreation,
         private readonly TaskStatusModel $taskStatus,
-        private readonly CommentModel $comments
+        private readonly CommentModel $comments,
+        private readonly ?ProjectPermissionModel $permissions = null
     ) {
         $this->driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
     }
@@ -207,6 +209,15 @@ final class RenewalService
         return $thresholds ?: self::DEFAULT_THRESHOLDS;
     }
 
+    /** The assignee, unless they cannot hold a task in the project (a non-member would see it on their dashboard). */
+    private function ownerFor(int $projectId, int $assigneeId): int
+    {
+        if ($assigneeId === 0 || $this->permissions === null) {
+            return $assigneeId;
+        }
+        return $this->permissions->isAssignable($projectId, $assigneeId) ? $assigneeId : 0;
+    }
+
     private function createCycle(array $domain, int $expiry, ?array $cycle): ?array
     {
         $projectId = (int) $domain['project_id'];
@@ -231,7 +242,7 @@ final class RenewalService
                 'title' => "Renew {$domain['name']} (expires ".gmdate('Y-m-d', $expiry).')',
                 'project_id' => $projectId,
                 'date_due' => $expiry,
-                'owner_id' => (int) $domain['assignee_id'],
+                'owner_id' => $this->ownerFor($projectId, (int) $domain['assignee_id']),
                 'reference' => $this->taskReference($cycleId),
             ]);
         } catch (Throwable $exception) {

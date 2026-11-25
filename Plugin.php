@@ -50,7 +50,8 @@ class Plugin extends Base
             $container['projectModel'],
             $container['taskCreationModel'],
             $container['taskStatusModel'],
-            $container['commentModel']
+            $container['commentModel'],
+            $container['projectPermissionModel']
         );
         $this->container['deedRefreshService'] = static function ($container): RefreshService {
             $batchSize = (int) $container['configModel']->get('deed_batch_size', 25);

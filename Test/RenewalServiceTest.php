@@ -6,6 +6,7 @@ use Kanboard\Plugin\Deed\Model\RenewalService;
 use Kanboard\Plugin\Deed\Plugin;
 use Kanboard\Subscriber\ProjectDailySummarySubscriber;
 use KanboardTests\units\Base;
+use Kanboard\Core\Security\Role;
 use PDO;
 use RuntimeException;
 use function Kanboard\Plugin\Deed\Schema\version_1;
@@ -36,6 +37,19 @@ class RenewalServiceTest extends Base
         $this->expiry = strtotime('2027-05-15 14:15:00 UTC');
         $this->project = $this->container['projectModel']->create(['name' => 'Renewals']);
         $this->assignee = $this->container['userModel']->create(['username' => 'renewal-owner']);
+        $this->container['projectUserRoleModel']->addUser($this->project, $this->assignee, Role::PROJECT_MEMBER);
+    }
+
+    public function testRenewalTaskIsUnassignedWhenTheAssigneeIsNotAProjectMember(): void
+    {
+        $private = $this->container['projectModel']->create(['name' => 'Private']);
+        $domain = $this->watch($private);
+
+        $this->evaluate($domain, 30);
+
+        $task = $this->container['taskFinderModel']->getById((int) $this->cycles()[0]['task_id']);
+        $this->assertSame($private, (int) $task['project_id']);
+        $this->assertSame(0, (int) $task['owner_id']);
     }
 
     public function testCreatesAtFirstThresholdUsingEarlierExpiryAndThenCommentsOncePerThreshold(): void
