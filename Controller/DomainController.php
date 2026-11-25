@@ -2,6 +2,7 @@
 
 namespace Kanboard\Plugin\Deed\Controller;
 
+use Kanboard\Core\Security\Role;
 use InvalidArgumentException;
 use Kanboard\Controller\BaseController;
 use Kanboard\Plugin\Deed\Client\RdapClient;
@@ -126,7 +127,7 @@ class DomainController extends BaseController
 
         $projects = [0 => t('None')] + ($this->userSession->isAdmin()
             ? $this->projectModel->getList(false, false)
-            : $this->projectUserRoleModel->getProjectsByUser($this->userSession->getId()));
+            : $this->writableProjects($this->userSession->getId()));
         $assignees = [0 => t('Unassigned')] + $this->userModel->getActiveUsersList();
         $currentProjectId = (int) $domain['project_id'];
         $keepProject = !isset($projects[$currentProjectId]);
@@ -142,14 +143,18 @@ class DomainController extends BaseController
             $assigneeId = $this->readId($this->request->getRawValue('assignee_id'));
             $validProject = $projectId !== null && (isset($projects[$projectId]) || ($keepProject && $selectedProject === 'keep'));
             $validAssignee = $assigneeId !== null && isset($assignees[$assigneeId]);
+            // Renewal tasks go to this project: their owner must be someone the project lets hold a task.
+            $memberAssignee = ! $validProject || ! $validAssignee || $assigneeId === 0 || $projectId === 0
+                || $this->projectPermissionModel->isAssignable($projectId, $assigneeId);
 
-            if ($validProject && $validAssignee) {
+            if ($validProject && $validAssignee && $memberAssignee) {
                 $this->deedDomainModel->update((int) $domain['id'], $projectId, $assigneeId);
                 $this->redirectTo('show', ['domain_id' => $domain['id']]);
                 return;
             }
 
-            $error = $validProject ? t('Select an active assignee.') : t('Select an accessible project.');
+            $error = ! $validProject ? t('Select an accessible project.')
+                : (! $validAssignee ? t('Select an active assignee.') : t('Select an assignee who is a member of that project.'));
             if ($validProject) {
                 $selection['project_id'] = $selectedProject === 'keep' ? 'keep' : $projectId;
             }
@@ -185,6 +190,19 @@ class DomainController extends BaseController
         }
 
         $this->renderPage('show', t('Remove %s', $domain['name']), ['domain' => $domain, 'view' => 'remove']);
+    }
+
+    /**
+     * Projects where the user may write tasks: Deed creates, comments on and closes renewal tasks
+     * in the chosen project, so a project where the user is only a viewer is left out.
+     */
+    private function writableProjects(int $userId): array
+    {
+        return array_filter(
+            $this->projectUserRoleModel->getProjectsByUser($userId),
+            fn ($name, $projectId) => ! in_array($this->projectUserRoleModel->getUserRole((int) $projectId, $userId), ['', Role::PROJECT_VIEWER], true),
+            ARRAY_FILTER_USE_BOTH
+        );
     }
 
     private function readId(mixed $value): ?int

@@ -146,6 +146,38 @@ class DomainDetailTest extends Base
         $this->assertSame((int) $assignee, (int) $domain['assignee_id']);
     }
 
+    public function testEditOffersOnlyProjectsWhereTheManagerMayWriteTasks(): void
+    {
+        // Deed creates, comments on and closes renewal tasks in the chosen project: a viewer may not.
+        $projects = $this->container['projectModel'];
+        $viewOnly = $projects->create(['name' => 'View Only Project']);
+        $this->container['projectUserRoleModel']->addUser($viewOnly, 1, Role::PROJECT_VIEWER);
+
+        [$status, $body] = $this->dispatch('edit');
+        $this->assertSame(200, $status);
+        // The header's project switcher lists it (the user may view it); the edit form's select must not.
+        $this->assertDoesNotMatchRegularExpression('/<option value="'.$viewOnly.'"[^>]*>View Only Project<\/option>/', $body);
+
+        [$status, $body] = $this->dispatch('edit', ['project_id' => $viewOnly, 'assignee_id' => 0]);
+        $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an accessible project.', $body);
+        $this->assertSame(0, (int) $this->container['deedDomainModel']->get($this->domainId)['project_id']);
+    }
+
+    public function testEditRefusesAnAssigneeOutsideTheChosenProject(): void
+    {
+        // A renewal task assigned to a non-member would show the private project on their dashboard.
+        $project = $this->container['projectModel']->create(['name' => 'Accessible Project'], 1, true);
+        $outsider = $this->container['userModel']->create(['username' => 'outsider']);
+
+        [$status, $body] = $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => $outsider]);
+        $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an assignee who is a member of that project.', $body);
+        $this->assertSame(0, (int) $this->container['deedDomainModel']->get($this->domainId)['assignee_id']);
+
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => 0])[0]);
+    }
+
     public function testManagerCanPreserveAnExistingProjectTheyCannotAccess(): void
     {
         $project = $this->container['projectModel']->create(['name' => 'Hidden Project']);
@@ -157,7 +189,9 @@ class DomainDetailTest extends Base
         $this->assertStringNotContainsString('Hidden Project', $body);
         $this->assertMatchesRegularExpression('/<option value="keep"[^>]*selected[^>]*>Keep current project<\/option>/', $body);
 
-        $this->assertSame(303, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 1])[0]);
+        // User 1 is not a member of the kept project, so they cannot own its renewal task; unassigned is fine.
+        $this->assertSame(400, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 1])[0]);
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 0])[0]);
         $this->assertSame((int) $project, (int) $domains->get($this->domainId)['project_id']);
     }
 
