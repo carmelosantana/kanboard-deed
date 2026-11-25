@@ -230,6 +230,36 @@ class DomainDetailTest extends Base
         $this->assertSame(0, (int) $this->container['db']->table('comments')->count());
     }
 
+    public function testCustomProjectRolesAreRefusedForSelectionKeepAndRefresh(): void
+    {
+        // A custom role may forbid creating or closing tasks; Deed writes through models, so only built-in write roles pass.
+        $projects = $this->container['projectModel'];
+        $custom = $projects->create(['name' => 'Custom Role Project']);
+        $role = $this->container['projectRoleModel']->create($custom, 'Read Mostly');
+        $this->assertNotFalse($role);
+        $this->container['projectUserRoleModel']->addUser($custom, 1, 'Read Mostly');
+        $member = $projects->create(['name' => 'Plain Member Project']);
+        $this->container['projectUserRoleModel']->addUser($member, 1, Role::PROJECT_MEMBER);
+
+        [$status, $body] = $this->dispatch('edit');
+        $this->assertSame(200, $status);
+        $this->assertDoesNotMatchRegularExpression('/<option value="'.$custom.'"[^>]*>Custom Role Project<\/option>/', $body);
+        $this->assertMatchesRegularExpression('/<option value="'.$member.'"[^>]*>Plain Member Project<\/option>/', $body);
+
+        $this->assertSame(400, $this->dispatch('edit', ['project_id' => $custom, 'assignee_id' => 0])[0]);
+        $this->assertSame(0, (int) $this->container['deedDomainModel']->get($this->domainId)['project_id']);
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $member, 'assignee_id' => 0])[0]);
+
+        $this->container['deedDomainModel']->update($this->domainId, $custom, 0);
+        $this->assertSame(400, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 0])[0]);
+        $this->assertSame((int) $custom, (int) $this->container['deedDomainModel']->get($this->domainId)['project_id']);
+
+        $this->container['db']->getConnection()->prepare('UPDATE deed_domains SET registry_expires_at = ? WHERE id = ?')
+            ->execute([time() + 5 * 86400, $this->domainId]);
+        $this->assertSame(403, $this->dispatch('refresh', ['domain_id' => (string) $this->domainId])[0]);
+        $this->assertSame(0, (int) $this->container['db']->table('tasks')->eq('project_id', $custom)->count());
+    }
+
     public function testRemovalRequiresConfirmationAndCsrfBeforeDeleting(): void
     {
         [$status, $body] = $this->dispatch('remove');

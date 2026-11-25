@@ -204,7 +204,7 @@ class DomainController extends BaseController
 
     /**
      * Projects where the user may write tasks: Deed creates, comments on and closes renewal tasks
-     * in the chosen project, so a project where the user is only a viewer is left out.
+     * in the chosen project, so a project where the user is a viewer or holds a custom role is left out.
      */
     private function writableProjects(int $userId): array
     {
@@ -217,10 +217,12 @@ class DomainController extends BaseController
 
     private function hasWriteRole(int $projectId, int $userId): bool
     {
-        return ! in_array($this->projectUserRoleModel->getUserRole($projectId, $userId), ['', Role::PROJECT_VIEWER], true);
+        // Custom project roles can forbid creating or closing tasks, which Deed does through models:
+        // only the built-in roles are known to allow it. getUserRole merges group-derived roles.
+        return in_array($this->projectUserRoleModel->getUserRole($projectId, $userId), [Role::PROJECT_MANAGER, Role::PROJECT_MEMBER], true);
     }
 
-    /** Same rule as the edit form's project list: app admins may write anywhere, others need a non-viewer role. */
+    /** Same rule as the edit form's project list: app admins may write anywhere, others need a built-in manager or member role. */
     private function canWriteProject(int $projectId, int $userId): bool
     {
         return $this->userSession->isAdmin() || $this->hasWriteRole($projectId, $userId);
