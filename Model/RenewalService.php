@@ -6,6 +6,7 @@ use Closure;
 use Kanboard\Model\CommentModel;
 use Kanboard\Model\ConfigModel;
 use Kanboard\Model\ProjectModel;
+use Kanboard\Model\ProjectPermissionModel;
 use Kanboard\Model\TaskCreationModel;
 use Kanboard\Model\TaskModel;
 use Kanboard\Model\TaskStatusModel;
@@ -33,7 +34,8 @@ final class RenewalService
         private readonly ProjectModel $projects,
         private readonly TaskCreationModel $taskCreation,
         private readonly TaskStatusModel $taskStatus,
-        private readonly CommentModel $comments
+        private readonly CommentModel $comments,
+        private readonly ?ProjectPermissionModel $permissions = null
     ) {
         $this->driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
     }
@@ -59,6 +61,19 @@ final class RenewalService
         }
 
         return null;
+    }
+
+    /** Projects holding an open renewal task for the domain: an evaluation comments on and closes those tasks. */
+    public function projectIdsWithOpenTasks(int $domainId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT DISTINCT tasks.project_id FROM deed_renewals
+             JOIN tasks ON tasks.id = deed_renewals.task_id
+             WHERE deed_renewals.domain_id = ? AND deed_renewals.closed_at IS NULL AND tasks.is_active = ?'
+        );
+        $statement->execute([$domainId, TaskModel::STATUS_OPEN]);
+
+        return array_map('intval', $statement->fetchAll(PDO::FETCH_COLUMN));
     }
 
     public function evaluate(array $domain, int $now): void
@@ -156,6 +171,9 @@ final class RenewalService
             if ($cycle['closed_at'] === null && (int) $cycle['task_id'] === 0) {
                 $cycle['task_id'] = $this->recoverTask((int) $cycle['id']);
             }
+            if ($cycle['closed_at'] === null) {
+                $this->reconcileOwner((int) $cycle['task_id']);
+            }
             if ($notFound) {
                 $this->sendNotices($cycle, ['not_found' => "Registry reports {$domain['name']} as not registered."]);
             } elseif ((int) $cycle['cycle_expires_at'] === $expiry) {
@@ -207,6 +225,36 @@ final class RenewalService
         return $thresholds ?: self::DEFAULT_THRESHOLDS;
     }
 
+    /** The assignee, unless they cannot hold a task in the project (a non-member would see it on their dashboard). */
+    private function ownerFor(int $projectId, int $assigneeId): int
+    {
+        if ($assigneeId === 0 || $this->permissions === null) {
+            return $assigneeId;
+        }
+        return $this->permissions->isAssignable($projectId, $assigneeId) ? $assigneeId : 0;
+    }
+
+    /**
+     * Unassign an open renewal task whose owner can no longer hold a task in its project,
+     * e.g. one created before the membership check or an owner later removed from the project.
+     * No migration is needed: the sweep re-evaluates every open renewal task at least daily.
+     */
+    private function reconcileOwner(int $taskId): void
+    {
+        if ($taskId === 0 || $this->permissions === null) {
+            return;
+        }
+        $statement = $this->pdo->prepare('SELECT project_id, owner_id FROM tasks WHERE id = ? AND is_active = ?');
+        $statement->execute([$taskId, TaskModel::STATUS_OPEN]);
+        $task = $statement->fetch(PDO::FETCH_ASSOC);
+        if ($task === false || (int) $task['owner_id'] === 0
+            || $this->ownerFor((int) $task['project_id'], (int) $task['owner_id']) !== 0) {
+            return;
+        }
+        $this->pdo->prepare('UPDATE tasks SET owner_id = 0, date_modification = ? WHERE id = ? AND owner_id = ?')
+            ->execute([time(), $taskId, $task['owner_id']]);
+    }
+
     private function createCycle(array $domain, int $expiry, ?array $cycle): ?array
     {
         $projectId = (int) $domain['project_id'];
@@ -231,7 +279,7 @@ final class RenewalService
                 'title' => "Renew {$domain['name']} (expires ".gmdate('Y-m-d', $expiry).')',
                 'project_id' => $projectId,
                 'date_due' => $expiry,
-                'owner_id' => (int) $domain['assignee_id'],
+                'owner_id' => $this->ownerFor($projectId, (int) $domain['assignee_id']),
                 'reference' => $this->taskReference($cycleId),
             ]);
         } catch (Throwable $exception) {

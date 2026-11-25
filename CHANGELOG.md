@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.2 — 2026-11-25
+- Security: a domain's project list now offers only projects where the user is a project manager or member (viewers and custom project roles are
+  refused, since a custom role may forbid creating or closing tasks), and the assignee
+  must be able to hold a task in that project. A renewal task whose assignee is not a project member is left
+  unassigned instead of appearing on that user's dashboard.
+- Security: each evaluation also unassigns an open renewal task whose owner cannot hold a task in its project,
+  covering tasks created before this check and owners later removed from the project.
+- Security: saving a domain with "Keep current project" and refreshing a domain now require write access to the
+  linked project (or the default one a refresh falls back to) and to every project still holding an open renewal task
+  for the domain, so relinking cannot reach tasks in a project the user cannot write to. A viewer, a custom-role user, a removed member or a pre-upgrade
+  mapping can no longer keep the link or trigger renewal task changes there. The scheduled sweep is unchanged.
+
 ## 1.0.1 — 2026-11-25
 
 - The settings controller is now `DeedSettingsController`. Kanboard keys access rules by short controller name,

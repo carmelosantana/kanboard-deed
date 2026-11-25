@@ -2,6 +2,7 @@
 
 namespace Kanboard\Plugin\Deed\Controller;
 
+use Kanboard\Core\Security\Role;
 use InvalidArgumentException;
 use Kanboard\Controller\BaseController;
 use Kanboard\Plugin\Deed\Client\RdapClient;
@@ -80,6 +81,14 @@ class DomainController extends BaseController
             return;
         }
 
+        // A refresh evaluates the renewal, which creates, comments on and closes tasks in the linked project
+        // (or the default one): do not let a user without write access there trigger that.
+        $domain = $this->deedDomainModel->get($id);
+        if ($domain !== null && ! $this->canWriteRenewalProject($domain, $this->userSession->getId())) {
+            $this->response->text(t('You cannot refresh a domain whose project you cannot write to.'), 403);
+            return;
+        }
+
         $updated = $this->deedRefreshService->refresh($id);
         if ($updated === null && $this->deedDomainModel->get($id) === null) {
             $this->response->text(t('Domain not found.'), 404);
@@ -126,7 +135,7 @@ class DomainController extends BaseController
 
         $projects = [0 => t('None')] + ($this->userSession->isAdmin()
             ? $this->projectModel->getList(false, false)
-            : $this->projectUserRoleModel->getProjectsByUser($this->userSession->getId()));
+            : $this->writableProjects($this->userSession->getId()));
         $assignees = [0 => t('Unassigned')] + $this->userModel->getActiveUsersList();
         $currentProjectId = (int) $domain['project_id'];
         $keepProject = !isset($projects[$currentProjectId]);
@@ -140,16 +149,22 @@ class DomainController extends BaseController
             $selectedProject = $this->request->getRawValue('project_id');
             $projectId = $keepProject && $selectedProject === 'keep' ? $currentProjectId : $this->readId($selectedProject);
             $assigneeId = $this->readId($this->request->getRawValue('assignee_id'));
-            $validProject = $projectId !== null && (isset($projects[$projectId]) || ($keepProject && $selectedProject === 'keep'));
+            // Keeping the linked project still needs write access to it: it is where renewal tasks are written.
+            $validProject = $projectId !== null && (isset($projects[$projectId])
+                || ($keepProject && $selectedProject === 'keep' && $this->canWriteProject($currentProjectId, $this->userSession->getId())));
             $validAssignee = $assigneeId !== null && isset($assignees[$assigneeId]);
+            // Renewal tasks go to this project: their owner must be someone the project lets hold a task.
+            $memberAssignee = ! $validProject || ! $validAssignee || $assigneeId === 0 || $projectId === 0
+                || $this->projectPermissionModel->isAssignable($projectId, $assigneeId);
 
-            if ($validProject && $validAssignee) {
+            if ($validProject && $validAssignee && $memberAssignee) {
                 $this->deedDomainModel->update((int) $domain['id'], $projectId, $assigneeId);
                 $this->redirectTo('show', ['domain_id' => $domain['id']]);
                 return;
             }
 
-            $error = $validProject ? t('Select an active assignee.') : t('Select an accessible project.');
+            $error = ! $validProject ? t('Select an accessible project.')
+                : (! $validAssignee ? t('Select an active assignee.') : t('Select an assignee who is a member of that project.'));
             if ($validProject) {
                 $selection['project_id'] = $selectedProject === 'keep' ? 'keep' : $projectId;
             }
@@ -185,6 +200,56 @@ class DomainController extends BaseController
         }
 
         $this->renderPage('show', t('Remove %s', $domain['name']), ['domain' => $domain, 'view' => 'remove']);
+    }
+
+    /**
+     * Projects where the user may write tasks: Deed creates, comments on and closes renewal tasks
+     * in the chosen project, so a project where the user is a viewer or holds a custom role is left out.
+     */
+    private function writableProjects(int $userId): array
+    {
+        return array_filter(
+            $this->projectUserRoleModel->getProjectsByUser($userId),
+            fn ($name, $projectId) => $this->hasWriteRole((int) $projectId, $userId),
+            ARRAY_FILTER_USE_BOTH
+        );
+    }
+
+    private function hasWriteRole(int $projectId, int $userId): bool
+    {
+        // Custom project roles can forbid creating or closing tasks, which Deed does through models:
+        // only the built-in roles are known to allow it. getUserRole merges group-derived roles.
+        return in_array($this->projectUserRoleModel->getUserRole($projectId, $userId), [Role::PROJECT_MANAGER, Role::PROJECT_MEMBER], true);
+    }
+
+    /** Same rule as the edit form's project list: app admins may write anywhere, others need a built-in manager or member role. */
+    private function canWriteProject(int $projectId, int $userId): bool
+    {
+        return $this->userSession->isAdmin() || $this->hasWriteRole($projectId, $userId);
+    }
+
+    /**
+     * A refresh writes to the project it targets (the linked one, else the default) and to every project still
+     * holding an open renewal task for the domain, which an evaluation comments on and closes.
+     */
+    private function canWriteRenewalProject(array $domain, int $userId): bool
+    {
+        $projectIds = $this->deedRenewalService->projectIdsWithOpenTasks((int) $domain['id']);
+        $projectId = (int) $domain['project_id'];
+        if (! $this->projectModel->exists($projectId)) {
+            $projectId = (int) $this->configModel->getOption('deed_default_project_id', 0);
+        }
+        if ($this->projectModel->exists($projectId)) {
+            $projectIds[] = $projectId;
+        }
+
+        foreach (array_unique($projectIds) as $id) {
+            if (! $this->canWriteProject($id, $userId)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function readId(mixed $value): ?int

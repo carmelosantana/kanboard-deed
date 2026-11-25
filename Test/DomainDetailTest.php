@@ -146,19 +146,158 @@ class DomainDetailTest extends Base
         $this->assertSame((int) $assignee, (int) $domain['assignee_id']);
     }
 
-    public function testManagerCanPreserveAnExistingProjectTheyCannotAccess(): void
+    public function testEditOffersOnlyProjectsWhereTheManagerMayWriteTasks(): void
+    {
+        // Deed creates, comments on and closes renewal tasks in the chosen project: a viewer may not.
+        $projects = $this->container['projectModel'];
+        $viewOnly = $projects->create(['name' => 'View Only Project']);
+        $this->container['projectUserRoleModel']->addUser($viewOnly, 1, Role::PROJECT_VIEWER);
+
+        [$status, $body] = $this->dispatch('edit');
+        $this->assertSame(200, $status);
+        // The header's project switcher lists it (the user may view it); the edit form's select must not.
+        $this->assertDoesNotMatchRegularExpression('/<option value="'.$viewOnly.'"[^>]*>View Only Project<\/option>/', $body);
+
+        [$status, $body] = $this->dispatch('edit', ['project_id' => $viewOnly, 'assignee_id' => 0]);
+        $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an accessible project.', $body);
+        $this->assertSame(0, (int) $this->container['deedDomainModel']->get($this->domainId)['project_id']);
+    }
+
+    public function testEditRefusesAnAssigneeOutsideTheChosenProject(): void
+    {
+        // A renewal task assigned to a non-member would show the private project on their dashboard.
+        $project = $this->container['projectModel']->create(['name' => 'Accessible Project'], 1, true);
+        $outsider = $this->container['userModel']->create(['username' => 'outsider']);
+
+        [$status, $body] = $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => $outsider]);
+        $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an assignee who is a member of that project.', $body);
+        $this->assertSame(0, (int) $this->container['deedDomainModel']->get($this->domainId)['assignee_id']);
+
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => 0])[0]);
+    }
+
+    public function testManagerCanPreserveAnExistingProjectTheyCanStillWriteTo(): void
     {
         $project = $this->container['projectModel']->create(['name' => 'Hidden Project']);
         $domains = $this->container['deedDomainModel'];
         $domains->update($this->domainId, $project, 0);
+        $this->container['projectUserRoleModel']->addUser($project, 1, Role::PROJECT_MANAGER);
 
         [$status, $body] = $this->dispatch('edit');
         $this->assertSame(200, $status);
-        $this->assertStringNotContainsString('Hidden Project', $body);
-        $this->assertMatchesRegularExpression('/<option value="keep"[^>]*selected[^>]*>Keep current project<\/option>/', $body);
+        $this->assertMatchesRegularExpression('/<option value="'.$project.'"[^>]*selected[^>]*>Hidden Project<\/option>/', $body);
 
-        $this->assertSame(303, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 1])[0]);
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => 1])[0]);
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => 0])[0]);
         $this->assertSame((int) $project, (int) $domains->get($this->domainId)['project_id']);
+    }
+
+    /** @dataProvider lostWriteAccess */
+    public function testKeepIsRefusedWhenTheUserCannotWriteToTheLinkedProject(?string $role): void
+    {
+        $project = $this->container['projectModel']->create(['name' => 'Linked Project']);
+        $domains = $this->container['deedDomainModel'];
+        $domains->update($this->domainId, $project, 0);
+        if ($role !== null) {
+            $this->container['projectUserRoleModel']->addUser($project, 1, $role);
+        }
+
+        [$status, $body] = $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 0]);
+        $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an accessible project.', $body);
+        $this->assertSame((int) $project, (int) $domains->get($this->domainId)['project_id']);
+    }
+
+    public static function lostWriteAccess(): iterable
+    {
+        yield 'viewer' => [Role::PROJECT_VIEWER];
+        yield 'removed member' => [null];
+    }
+
+    public function testRefreshIsRefusedWhenTheUserCannotWriteToTheLinkedProject(): void
+    {
+        $project = $this->container['projectModel']->create(['name' => 'Linked Project']);
+        $this->container['projectUserRoleModel']->addUser($project, 1, Role::PROJECT_VIEWER);
+        $this->container['deedDomainModel']->update($this->domainId, $project, 0);
+        $this->container['db']->getConnection()->prepare('UPDATE deed_domains SET registry_expires_at = ? WHERE id = ?')
+            ->execute([time() + 5 * 86400, $this->domainId]);
+
+        // The fetcher mock in setUp fails the test if a lookup runs.
+        $this->assertSame(403, $this->dispatch('refresh', ['domain_id' => (string) $this->domainId])[0]);
+        $this->assertSame(0, (int) $this->container['db']->table('tasks')->eq('project_id', $project)->count());
+        $this->assertSame(0, (int) $this->container['db']->table('comments')->count());
+    }
+
+    public static function earlierCycleAccess(): iterable
+    {
+        yield 'viewer of the earlier project' => [Role::PROJECT_VIEWER, 403];
+        yield 'not a member of the earlier project' => [null, 403];
+        yield 'member of both projects' => [Role::PROJECT_MEMBER, 303];
+    }
+
+    /** @dataProvider earlierCycleAccess */
+    public function testRefreshNeedsWriteAccessToProjectsHoldingOpenRenewalTasks(?string $roleInEarlier, int $expected): void
+    {
+        $projects = $this->container['projectModel'];
+        $earlier = $projects->create(['name' => 'Earlier Project']);
+        $current = $projects->create(['name' => 'Current Project']);
+        $roles = $this->container['projectUserRoleModel'];
+        $roles->addUser($current, 1, Role::PROJECT_MEMBER);
+        if ($roleInEarlier !== null) {
+            $roles->addUser($earlier, 1, $roleInEarlier);
+        }
+        $taskId = $this->container['taskCreationModel']->create(['title' => 'Renew example.com', 'project_id' => $earlier]);
+        $pdo = $this->container['db']->getConnection();
+        $pdo->prepare('INSERT INTO deed_renewals (domain_id, cycle_expires_at, task_id, thresholds_sent) VALUES (?, ?, ?, ?)')
+            ->execute([$this->domainId, strtotime('2030-01-01 UTC'), $taskId, '[]']);
+        $this->container['deedDomainModel']->update($this->domainId, $current, 0);
+        $pdo->prepare('UPDATE deed_domains SET registry_expires_at = ? WHERE id = ?')
+            ->execute([time() + 400 * 86400, $this->domainId]);
+        if ($expected === 303) {
+            // The refresh proceeds; a failing registry is enough to show it was not refused.
+            $fetcher = $this->createMock(HttpFetcher::class);
+            $fetcher->method('fetch')->willReturn(new \Kanboard\Plugin\Deed\Client\HttpResponse(500, ''));
+            $this->container['deedHttp'] = $fetcher;
+        }
+
+        // The fetcher mock in setUp fails the test if a refused refresh runs a lookup.
+        $this->assertSame($expected, $this->dispatch('refresh', ['domain_id' => (string) $this->domainId])[0]);
+        if ($expected === 403) {
+            $this->assertSame(0, (int) $this->container['db']->table('comments')->count());
+            $this->assertSame(1, (int) $this->container['db']->table('tasks')->eq('id', $taskId)->eq('is_active', 1)->count());
+        }
+    }
+
+    public function testCustomProjectRolesAreRefusedForSelectionKeepAndRefresh(): void
+    {
+        // A custom role may forbid creating or closing tasks; Deed writes through models, so only built-in write roles pass.
+        $projects = $this->container['projectModel'];
+        $custom = $projects->create(['name' => 'Custom Role Project']);
+        $role = $this->container['projectRoleModel']->create($custom, 'Read Mostly');
+        $this->assertNotFalse($role);
+        $this->container['projectUserRoleModel']->addUser($custom, 1, 'Read Mostly');
+        $member = $projects->create(['name' => 'Plain Member Project']);
+        $this->container['projectUserRoleModel']->addUser($member, 1, Role::PROJECT_MEMBER);
+
+        [$status, $body] = $this->dispatch('edit');
+        $this->assertSame(200, $status);
+        $this->assertDoesNotMatchRegularExpression('/<option value="'.$custom.'"[^>]*>Custom Role Project<\/option>/', $body);
+        $this->assertMatchesRegularExpression('/<option value="'.$member.'"[^>]*>Plain Member Project<\/option>/', $body);
+
+        $this->assertSame(400, $this->dispatch('edit', ['project_id' => $custom, 'assignee_id' => 0])[0]);
+        $this->assertSame(0, (int) $this->container['deedDomainModel']->get($this->domainId)['project_id']);
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $member, 'assignee_id' => 0])[0]);
+
+        $this->container['deedDomainModel']->update($this->domainId, $custom, 0);
+        $this->assertSame(400, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 0])[0]);
+        $this->assertSame((int) $custom, (int) $this->container['deedDomainModel']->get($this->domainId)['project_id']);
+
+        $this->container['db']->getConnection()->prepare('UPDATE deed_domains SET registry_expires_at = ? WHERE id = ?')
+            ->execute([time() + 5 * 86400, $this->domainId]);
+        $this->assertSame(403, $this->dispatch('refresh', ['domain_id' => (string) $this->domainId])[0]);
+        $this->assertSame(0, (int) $this->container['db']->table('tasks')->eq('project_id', $custom)->count());
     }
 
     public function testRemovalRequiresConfirmationAndCsrfBeforeDeleting(): void
@@ -195,7 +334,7 @@ class DomainDetailTest extends Base
             $post['csrf_token'] = $this->container['token']->getCSRFToken();
         }
         $this->container['request'] = new Request($this->container, [
-            'REQUEST_URI' => '/deed/domains/'.$action.'/'.($id ?? $this->domainId),
+            'REQUEST_URI' => '/deed/domains/'.$action.($action === 'refresh' ? '' : '/'.($id ?? $this->domainId)),
             'REQUEST_METHOD' => $post === null ? 'GET' : 'POST',
             'SCRIPT_NAME' => '/index.php',
         ], [], $post ?? []);
