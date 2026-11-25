@@ -52,6 +52,46 @@ class RenewalServiceTest extends Base
         $this->assertSame(0, (int) $task['owner_id']);
     }
 
+    public function testExistingRenewalTaskOwnedByANonMemberIsUnassignedOnTheNextEvaluation(): void
+    {
+        $private = $this->container['projectModel']->create(['name' => 'Private']);
+        $domain = $this->watch($private);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        // A task created before the membership check kept the non-member owner.
+        $this->pdo->prepare('UPDATE tasks SET owner_id = ? WHERE id = ?')->execute([$this->assignee, $taskId]);
+
+        $this->evaluate($domain, 20);
+
+        $this->assertSame(0, (int) $this->container['taskFinderModel']->getById($taskId)['owner_id']);
+    }
+
+    public function testRenewalOwnerRemovedFromTheProjectIsUnassignedOnTheNextEvaluation(): void
+    {
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+        $this->assertSame($this->assignee, (int) $this->container['taskFinderModel']->getById($taskId)['owner_id']);
+
+        $this->container['projectUserRoleModel']->removeUser($this->project, $this->assignee);
+        $this->evaluate($domain, 14);
+
+        $this->assertSame(0, (int) $this->container['taskFinderModel']->getById($taskId)['owner_id']);
+        $this->assertSame(['Expires in 14 days.'], $this->comments($taskId));
+    }
+
+    public function testRenewalOwnerWhoIsStillAMemberKeepsTheTask(): void
+    {
+        $domain = $this->watch($this->project);
+        $this->evaluate($domain, 30);
+        $taskId = (int) $this->cycles()[0]['task_id'];
+
+        $this->evaluate($domain, 20);
+        $this->evaluate($domain, 14);
+
+        $this->assertSame($this->assignee, (int) $this->container['taskFinderModel']->getById($taskId)['owner_id']);
+    }
+
     public function testCreatesAtFirstThresholdUsingEarlierExpiryAndThenCommentsOncePerThreshold(): void
     {
         $domain = $this->watch($this->project);

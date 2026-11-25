@@ -158,6 +158,9 @@ final class RenewalService
             if ($cycle['closed_at'] === null && (int) $cycle['task_id'] === 0) {
                 $cycle['task_id'] = $this->recoverTask((int) $cycle['id']);
             }
+            if ($cycle['closed_at'] === null) {
+                $this->reconcileOwner((int) $cycle['task_id']);
+            }
             if ($notFound) {
                 $this->sendNotices($cycle, ['not_found' => "Registry reports {$domain['name']} as not registered."]);
             } elseif ((int) $cycle['cycle_expires_at'] === $expiry) {
@@ -216,6 +219,27 @@ final class RenewalService
             return $assigneeId;
         }
         return $this->permissions->isAssignable($projectId, $assigneeId) ? $assigneeId : 0;
+    }
+
+    /**
+     * Unassign an open renewal task whose owner can no longer hold a task in its project,
+     * e.g. one created before the membership check or an owner later removed from the project.
+     * No migration is needed: the sweep re-evaluates every open renewal task at least daily.
+     */
+    private function reconcileOwner(int $taskId): void
+    {
+        if ($taskId === 0 || $this->permissions === null) {
+            return;
+        }
+        $statement = $this->pdo->prepare('SELECT project_id, owner_id FROM tasks WHERE id = ? AND is_active = ?');
+        $statement->execute([$taskId, TaskModel::STATUS_OPEN]);
+        $task = $statement->fetch(PDO::FETCH_ASSOC);
+        if ($task === false || (int) $task['owner_id'] === 0
+            || $this->ownerFor((int) $task['project_id'], (int) $task['owner_id']) !== 0) {
+            return;
+        }
+        $this->pdo->prepare('UPDATE tasks SET owner_id = 0, date_modification = ? WHERE id = ? AND owner_id = ?')
+            ->execute([time(), $taskId, $task['owner_id']]);
     }
 
     private function createCycle(array $domain, int $expiry, ?array $cycle): ?array
