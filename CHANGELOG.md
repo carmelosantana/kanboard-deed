@@ -5,6 +5,8 @@
 - Security: a domain's project list now offers only projects where the user is above viewer, and the assignee
   must be able to hold a task in that project. A renewal task whose assignee is not a project member is left
   unassigned instead of appearing on that user's dashboard.
+- Security: each evaluation also unassigns an open renewal task whose owner cannot hold a task in its project,
+  covering tasks created before this check and owners later removed from the project.
 
 ## 1.0.1 — 2026-11-25
 
