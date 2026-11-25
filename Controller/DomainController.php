@@ -81,6 +81,14 @@ class DomainController extends BaseController
             return;
         }
 
+        // A refresh evaluates the renewal, which creates, comments on and closes tasks in the linked project
+        // (or the default one): do not let a user without write access there trigger that.
+        $domain = $this->deedDomainModel->get($id);
+        if ($domain !== null && ! $this->canWriteRenewalProject($domain, $this->userSession->getId())) {
+            $this->response->text(t('You cannot refresh a domain whose project you cannot write to.'), 403);
+            return;
+        }
+
         $updated = $this->deedRefreshService->refresh($id);
         if ($updated === null && $this->deedDomainModel->get($id) === null) {
             $this->response->text(t('Domain not found.'), 404);
@@ -141,7 +149,9 @@ class DomainController extends BaseController
             $selectedProject = $this->request->getRawValue('project_id');
             $projectId = $keepProject && $selectedProject === 'keep' ? $currentProjectId : $this->readId($selectedProject);
             $assigneeId = $this->readId($this->request->getRawValue('assignee_id'));
-            $validProject = $projectId !== null && (isset($projects[$projectId]) || ($keepProject && $selectedProject === 'keep'));
+            // Keeping the linked project still needs write access to it: it is where renewal tasks are written.
+            $validProject = $projectId !== null && (isset($projects[$projectId])
+                || ($keepProject && $selectedProject === 'keep' && $this->canWriteProject($currentProjectId, $this->userSession->getId())));
             $validAssignee = $assigneeId !== null && isset($assignees[$assigneeId]);
             // Renewal tasks go to this project: their owner must be someone the project lets hold a task.
             $memberAssignee = ! $validProject || ! $validAssignee || $assigneeId === 0 || $projectId === 0
@@ -200,9 +210,34 @@ class DomainController extends BaseController
     {
         return array_filter(
             $this->projectUserRoleModel->getProjectsByUser($userId),
-            fn ($name, $projectId) => ! in_array($this->projectUserRoleModel->getUserRole((int) $projectId, $userId), ['', Role::PROJECT_VIEWER], true),
+            fn ($name, $projectId) => $this->hasWriteRole((int) $projectId, $userId),
             ARRAY_FILTER_USE_BOTH
         );
+    }
+
+    private function hasWriteRole(int $projectId, int $userId): bool
+    {
+        return ! in_array($this->projectUserRoleModel->getUserRole($projectId, $userId), ['', Role::PROJECT_VIEWER], true);
+    }
+
+    /** Same rule as the edit form's project list: app admins may write anywhere, others need a non-viewer role. */
+    private function canWriteProject(int $projectId, int $userId): bool
+    {
+        return $this->userSession->isAdmin() || $this->hasWriteRole($projectId, $userId);
+    }
+
+    /** The project a refresh would write renewal tasks to, if any: the linked one, else the default. */
+    private function canWriteRenewalProject(array $domain, int $userId): bool
+    {
+        $projectId = (int) $domain['project_id'];
+        if (! $this->projectModel->exists($projectId)) {
+            $projectId = (int) $this->configModel->getOption('deed_default_project_id', 0);
+            if (! $this->projectModel->exists($projectId)) {
+                return true;
+            }
+        }
+
+        return $this->canWriteProject($projectId, $userId);
     }
 
     private function readId(mixed $value): ?int

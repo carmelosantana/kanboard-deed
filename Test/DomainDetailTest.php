@@ -178,21 +178,56 @@ class DomainDetailTest extends Base
         $this->assertSame(303, $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => 0])[0]);
     }
 
-    public function testManagerCanPreserveAnExistingProjectTheyCannotAccess(): void
+    public function testManagerCanPreserveAnExistingProjectTheyCanStillWriteTo(): void
     {
         $project = $this->container['projectModel']->create(['name' => 'Hidden Project']);
         $domains = $this->container['deedDomainModel'];
         $domains->update($this->domainId, $project, 0);
+        $this->container['projectUserRoleModel']->addUser($project, 1, Role::PROJECT_MANAGER);
 
         [$status, $body] = $this->dispatch('edit');
         $this->assertSame(200, $status);
-        $this->assertStringNotContainsString('Hidden Project', $body);
-        $this->assertMatchesRegularExpression('/<option value="keep"[^>]*selected[^>]*>Keep current project<\/option>/', $body);
+        $this->assertMatchesRegularExpression('/<option value="'.$project.'"[^>]*selected[^>]*>Hidden Project<\/option>/', $body);
 
-        // User 1 is not a member of the kept project, so they cannot own its renewal task; unassigned is fine.
-        $this->assertSame(400, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 1])[0]);
-        $this->assertSame(303, $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 0])[0]);
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => 1])[0]);
+        $this->assertSame(303, $this->dispatch('edit', ['project_id' => $project, 'assignee_id' => 0])[0]);
         $this->assertSame((int) $project, (int) $domains->get($this->domainId)['project_id']);
+    }
+
+    /** @dataProvider lostWriteAccess */
+    public function testKeepIsRefusedWhenTheUserCannotWriteToTheLinkedProject(?string $role): void
+    {
+        $project = $this->container['projectModel']->create(['name' => 'Linked Project']);
+        $domains = $this->container['deedDomainModel'];
+        $domains->update($this->domainId, $project, 0);
+        if ($role !== null) {
+            $this->container['projectUserRoleModel']->addUser($project, 1, $role);
+        }
+
+        [$status, $body] = $this->dispatch('edit', ['project_id' => 'keep', 'assignee_id' => 0]);
+        $this->assertSame(400, $status);
+        $this->assertStringContainsString('Select an accessible project.', $body);
+        $this->assertSame((int) $project, (int) $domains->get($this->domainId)['project_id']);
+    }
+
+    public static function lostWriteAccess(): iterable
+    {
+        yield 'viewer' => [Role::PROJECT_VIEWER];
+        yield 'removed member' => [null];
+    }
+
+    public function testRefreshIsRefusedWhenTheUserCannotWriteToTheLinkedProject(): void
+    {
+        $project = $this->container['projectModel']->create(['name' => 'Linked Project']);
+        $this->container['projectUserRoleModel']->addUser($project, 1, Role::PROJECT_VIEWER);
+        $this->container['deedDomainModel']->update($this->domainId, $project, 0);
+        $this->container['db']->getConnection()->prepare('UPDATE deed_domains SET registry_expires_at = ? WHERE id = ?')
+            ->execute([time() + 5 * 86400, $this->domainId]);
+
+        // The fetcher mock in setUp fails the test if a lookup runs.
+        $this->assertSame(403, $this->dispatch('refresh', ['domain_id' => (string) $this->domainId])[0]);
+        $this->assertSame(0, (int) $this->container['db']->table('tasks')->eq('project_id', $project)->count());
+        $this->assertSame(0, (int) $this->container['db']->table('comments')->count());
     }
 
     public function testRemovalRequiresConfirmationAndCsrfBeforeDeleting(): void
@@ -229,7 +264,7 @@ class DomainDetailTest extends Base
             $post['csrf_token'] = $this->container['token']->getCSRFToken();
         }
         $this->container['request'] = new Request($this->container, [
-            'REQUEST_URI' => '/deed/domains/'.$action.'/'.($id ?? $this->domainId),
+            'REQUEST_URI' => '/deed/domains/'.$action.($action === 'refresh' ? '' : '/'.($id ?? $this->domainId)),
             'REQUEST_METHOD' => $post === null ? 'GET' : 'POST',
             'SCRIPT_NAME' => '/index.php',
         ], [], $post ?? []);
